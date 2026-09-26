@@ -97,10 +97,15 @@ test('lanes obey the spacing rules and power blocks sit in the centre', () => {
     for (const b of blocks.filter((x) => x.type === BLOCK.POWER)) assert.equal(b.lane, 0);
     const kind = (b) => (b.type === BLOCK.GREY ? 1 : 0);
     for (let i = 1; i < blocks.length; i++) {
-      const a = blocks[i - 1], b = blocks[i], dt = b.t - a.t;
-      if (b.lane === a.lane) assert.ok(dt >= LAYOUT.sameLaneGap, `same lane ${dt.toFixed(3)} s apart at ${b.t}`);
-      if (kind(a) !== kind(b) && dt < LAYOUT.typeGap) assert.notEqual(a.lane, b.lane, `mixed types share a lane at ${b.t}`);
-      if (kind(a) === kind(b) && dt < LAYOUT.outerPairGap && a.lane !== 0) assert.notEqual(b.lane, -a.lane, `outer-outer pair at ${b.t}`);
+      const b = blocks[i];
+      let lastSame = null;
+      for (let j = i - 1; j >= 0 && b.t - blocks[j].t < LAYOUT.outerPairGap; j--) {
+        const a = blocks[j], dt = b.t - a.t;
+        if (b.lane === a.lane) assert.ok(dt >= LAYOUT.sameLaneGap, `same lane ${dt.toFixed(3)} s apart at ${b.t}`);
+        if (kind(a) !== kind(b) && dt < LAYOUT.typeGap) assert.notEqual(a.lane, b.lane, `mixed types share a lane at ${b.t}`);
+        if (!lastSame && kind(a) === kind(b)) lastSame = a;
+      }
+      if (lastSame && lastSame.lane !== 0) assert.notEqual(b.lane, -lastSame.lane, `outer-outer pair at ${b.t}`);
     }
     // All three lanes get used.
     for (const lane of [-1, 0, 1]) assert.ok(blocks.filter((b) => b.lane === lane).length > blocks.length * 0.15);

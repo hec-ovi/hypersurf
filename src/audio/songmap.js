@@ -253,12 +253,10 @@ function fillQuietGaps(blocks, features, grid, downbeatPhase, scales) {
   const out = blocks.slice();
   const lufs = features.intensity.lufs, rate = features.intensity.rate;
   const times = blocks.map((b) => b.t);
-  const start = times.length ? times[0] : Infinity;
-  const end = times.length ? times[times.length - 1] : -Infinity;
   const first = grid.offset + downbeatPhase;
   for (let i = 0; i + 1 < times.length; i++) {
     const a = times[i], b = times[i + 1];
-    if (b - a <= LAYOUT.quietGap || a < start || b > end) continue;
+    if (b - a <= LAYOUT.quietGap) continue;
     const p0 = Math.ceil(gridPosition(grid, a) + 0.5), p1 = Math.floor(gridPosition(grid, b) - 0.5);
     for (let p = p0; p <= p1; p++) {
       if ((((p - first) % 2) + 2) % 2 !== 0) continue;
@@ -369,18 +367,33 @@ function assignLanes(blocks, grid, downbeatPhase, rand) {
   }
 }
 
-/** AS2's spacing rules plus a minimum same-lane gap, applied in time order. */
+/**
+ * AS2's spacing rules plus a minimum same-lane gap, applied in time order
+ * against every recent block: no two blocks share a lane within 0.12 s,
+ * a colour and a grey never share a lane within 0.15 s, and two blocks of a
+ * kind less than 0.2 s apart are never outer-outer. A clashing block moves
+ * to the least-penalised lane, nearest first.
+ */
 function enforceSpacing(blocks, rand) {
   const kind = (b) => (b.type === BLOCK.GREY ? 1 : 0);
+  const cost = new Float64Array(3);
   for (let i = 1; i < blocks.length; i++) {
-    const b = blocks[i], p = blocks[i - 1];
+    const b = blocks[i];
     if (b.type === BLOCK.POWER) continue;
-    const dt = b.t - p.t;
-    if (b.lane === p.lane && dt < LAYOUT.sameLaneGap) b.lane = p.lane === 0 ? (rand() < 0.5 ? -1 : 1) : 0;
-    if (kind(b) !== kind(p) && dt < LAYOUT.typeGap && b.lane === p.lane) b.lane = p.lane === 0 ? (rand() < 0.5 ? -1 : 1) : 0;
-    if (kind(b) === kind(p) && dt < LAYOUT.outerPairGap && b.lane !== 0 && b.lane === -p.lane) b.lane = 0;
-    // Moving to the centre must not recreate a same-lane or mixed-type clash with p.
-    if (b.lane === p.lane && (dt < LAYOUT.sameLaneGap || (kind(b) !== kind(p) && dt < LAYOUT.typeGap))) b.lane = p.lane === 0 ? (rand() < 0.5 ? -1 : 1) : 0;
+    cost.fill(0);
+    let lastSame = null;
+    for (let j = i - 1; j >= 0 && b.t - blocks[j].t < LAYOUT.outerPairGap; j--) {
+      const p = blocks[j], dt = b.t - p.t;
+      if (dt < LAYOUT.sameLaneGap) cost[p.lane + 1] += 4;
+      if (kind(p) !== kind(b) && dt < LAYOUT.typeGap) cost[p.lane + 1] += 2;
+      if (!lastSame && kind(p) === kind(b)) lastSame = p;
+    }
+    if (lastSame && lastSame.lane !== 0) cost[1 - lastSame.lane] += 1;
+    if (cost[b.lane + 1] === 0) continue;
+    const order = b.lane === 0 ? (rand() < 0.5 ? [0, -1, 1] : [0, 1, -1]) : [b.lane, 0, -b.lane];
+    let best = b.lane, bestCost = Infinity;
+    for (const lane of order) if (cost[lane + 1] < bestCost) { bestCost = cost[lane + 1]; best = lane; }
+    b.lane = best;
   }
 }
 
