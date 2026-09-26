@@ -39,3 +39,19 @@ test('input mappings', () => {
   assert.equal(stickToX(-1, 3), -3);
   assert.ok(Math.abs(stickToX(0.6, 3) - 1.5) < 1e-12);
 });
+
+test('a held key keeps driving the ship when the mouse or a pad moves', async () => {
+  const { InputController } = await import('../src/game/input.js');
+  const input = new InputController({});
+  input.right = true;
+  input.lastPressed = 1;
+  for (const source of ['lock', 'mouse', 'touch', 'pad']) {
+    input.source = source;
+    input.lockedX = input.pointerX = -3;
+    input._padX = -3;
+    assert.equal(input.targetNow(), 3, `${source} must not override the held key`);
+  }
+  input.right = false;
+  input.source = 'mouse';
+  assert.equal(input.targetNow(), -3, 'the pointer drives again once no key is held');
+});

@@ -92,9 +92,15 @@ export class InputController {
     const el = this.element;
     const h = {
       keydown: (e) => {
-        if (!this.enabled || e.repeat) return;
-        if (LEFT_KEYS.has(e.code)) { this.left = true; this.lastPressed = -1; this.source = 'keys'; e.preventDefault(); }
-        else if (RIGHT_KEYS.has(e.code)) { this.right = true; this.lastPressed = 1; this.source = 'keys'; e.preventDefault(); }
+        if (!this.enabled) return;
+        const dir = LEFT_KEYS.has(e.code) ? -1 : RIGHT_KEYS.has(e.code) ? 1 : 0;
+        if (!dir) return;
+        e.preventDefault();
+        if (dir < 0) this.left = true; else this.right = true;
+        // Auto-repeat re-asserts a key still held after a blur or pause cleared it,
+        // but only a fresh press decides which of two held keys wins.
+        if (!e.repeat) this.lastPressed = dir;
+        this.source = 'keys';
       },
       keyup: (e) => {
         if (LEFT_KEYS.has(e.code)) this.left = false;
@@ -170,6 +176,9 @@ export class InputController {
   }
 
   targetNow() {
+    // A held direction key always drives the ship: mouse jitter under pointer
+    // lock or an idle stick must not take it away while the key is still down.
+    if (this.left || this.right) return heldDirection(this.left, this.right, this.lastPressed) * LANE_WIDTH;
     switch (this.source) {
       case 'lock': return this.lockedX;
       case 'mouse':
