@@ -18,6 +18,8 @@ import { parseVideoId } from './live/youtube.js';
 
 const params = new URLSearchParams(location.search);
 const DEBUG = params.has('debug') && params.get('debug') !== '0';
+/** Debug only: start runs this many seconds into the song (visual checks). */
+const FROM = DEBUG ? Math.max(0, Number(params.get('from')) || 0) : 0;
 const STEP = 1 / 240;
 const MAX_STEPS = 240 * 2; // longest catch-up before skipping ahead
 const SWOOP = 2; // seconds of the lead-in spent flying in
@@ -48,6 +50,7 @@ const app = {
   mode: 'mono',
   rules: null,
   simT: 0,
+  runStart: -LEAD_IN,
   viewT: 0,
   nextBeat: 0,
   lastFrame: 0,
@@ -311,20 +314,24 @@ async function beginRun() {
   app.input.setShoulders(RULES[mode].shoulders);
   app.hud.reset(mode);
   app.autopilot = app.autopilotOn ? createAutopilot(map.blocks) : null;
-  view.reset(-LEAD_IN);
+  const start = Math.min(FROM, Math.max(0, map.duration - 5)) - LEAD_IN;
+  view.reset(start);
   if (!view.compiled) {
     setState('analyze');
     loading(null, 1, 'Preparing the track…');
     await view.compile(app.rules.state);
   }
-  app.simT = -LEAD_IN;
-  app.viewT = -LEAD_IN;
+  app.rules.skipTo(start);
+  app.runStart = start;
+  app.simT = start;
+  app.viewT = start;
   app.nextBeat = 0;
+  while (app.nextBeat < map.beats.length && map.beats[app.nextBeat] < start) app.nextBeat++;
   stats.hits = 0;
   stats.misses = 0;
   stats.runs++;
   ensureAudio();
-  app.player.play(app.song.buffer, LEAD_IN);
+  app.player.play(app.song.buffer, LEAD_IN, start + LEAD_IN);
   app.lastFrame = performance.now();
   view.gfx.resetTiming(app.lastFrame);
   setState('play');
@@ -382,7 +389,7 @@ function frame() {
   if (!live || !view || !view.map) return;
 
   if (app.state === 'play') tick(dt);
-  const swoop = Math.min(1, (app.viewT + LEAD_IN) / SWOOP);
+  const swoop = Math.min(1, (app.viewT - app.runStart) / SWOOP);
   view.frame(app.viewT, app.state === 'play' ? dt : 0, t0 / 1000, app.ship.x, app.ship.v, app.rules.state, app.juice, swoop);
   view.render();
   if (app.state === 'play') view.gfx.adapt(frameMs, t0);

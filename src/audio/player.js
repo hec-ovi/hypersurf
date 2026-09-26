@@ -22,18 +22,18 @@ export class SongPlayer {
   }
 
   /**
-   * Play `buffer` so that song time 0 is heard `leadIn` seconds from now.
-   * Song time runs from -leadIn during the lead-in.
+   * Play `buffer` so that song time `from` is heard `leadIn` seconds from
+   * now. Song time runs from `from - leadIn` during the lead-in.
    */
-  play(buffer, leadIn = 3) {
+  play(buffer, leadIn = 3, from = 0) {
     this.stop();
     const ctx = this.context;
     const src = ctx.createBufferSource();
     src.buffer = buffer;
     src.connect(this.gain);
     this.startAt = ctx.currentTime + leadIn;
-    src.start(this.startAt);
-    this.clock.start(this.startAt);
+    src.start(this.startAt, from);
+    this.clock.start(this.startAt - from);
     this.source = src;
   }
 
