@@ -546,9 +546,10 @@ function freezeAt(t, { settle = 1.5, beat = 0, shock = 0, lens = 0, hit = 0, x =
  * Render `frames` frames from song time `from`, `dt` apart, synchronously,
  * forcing the GPU to finish each one (a 1-pixel readback on WebGL2, queue
  * completion on WebGPU). Measures real frame cost even in a background tab
- * where animation frames are throttled.
+ * where animation frames are throttled. render: false runs only the
+ * game-side frame work (to check it allocates nothing).
  */
-async function bench({ from = app.viewT, frames = 300, dt = 1 / 60 } = {}) {
+async function bench({ from = app.viewT, frames = 300, dt = 1 / 60, render = true } = {}) {
   const view = app.view;
   if (!view || !view.map) return null;
   const was = app.frozen;
@@ -560,15 +561,21 @@ async function bench({ from = app.viewT, frames = 300, dt = 1 / 60 } = {}) {
   const pilot = createAutopilot(app.map.blocks);
   const heap0 = performance.memory ? performance.memory.usedJSHeapSize : 0;
   let draws = 0, tris = 0;
+  const renderer = view.gfx.renderer;
   for (let i = 0; i < frames; i++) {
     const t = from + i * dt;
+    // What the animation loop does per frame: without a new node frame the
+    // scene pass would reuse its last output.
+    renderer.info.reset();
+    renderer._nodes.nodeFrame.update();
+    renderer.info.frame = renderer._nodes.nodeFrame.frameId;
     const a = performance.now();
     app.ship.step(dt, pilot(t));
     app.juice.update(dt);
     view.frame(t, dt, t, app.ship.x, app.ship.v, app.rules.state, app.juice, 1);
-    view.render();
+    if (render) view.render();
     const b = performance.now();
-    if (gl) {
+    if (!render) { /* game-side work only */ } else if (gl) {
       const fb = gl.getParameter(gl.FRAMEBUFFER_BINDING);
       gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
