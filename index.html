@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>hypersurf</title>
+  <meta name="description" content="Ride a neon track built from your music. A browser game inspired by Audiosurf 2.">
+  <meta name="theme-color" content="#05060A">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2305060A'/%3E%3Cpath d='M5 23 L16 7 L27 23' fill='none' stroke='%2319E0A0' stroke-width='3' stroke-linejoin='round'/%3E%3Cpath d='M10 23 L16 14 L22 23' fill='none' stroke='%23FF1F4B' stroke-width='2.5' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="styles.css">
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.webgpu.js",
+        "three/webgpu": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.webgpu.js",
+        "three/tsl": "https://cdn.jsdelivr.net/npm/three@0.186.1/build/three.tsl.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.186.1/examples/jsm/"
+      }
+    }
+  </script>
+  <script type="module" src="src/main.js"></script>
+</head>
+<body data-state="boot">
+  <canvas id="view" aria-label="Game view"></canvas>
+
+  <div id="hud" class="hud" hidden>
+    <div class="hud-progress"><div data-hud="progress"></div></div>
+    <div class="hud-top">
+      <div class="hud-title" data-hud="title"></div>
+      <div class="hud-score">
+        <div class="score" data-hud="score">0</div>
+        <div class="mult" data-hud="mult"></div>
+      </div>
+    </div>
+    <div class="hud-grid">
+      <div class="grid" data-hud="grid"></div>
+      <div class="timer"><div data-hud="timer"></div></div>
+    </div>
+    <div class="toast" data-hud="toast" aria-live="polite"></div>
+  </div>
+
+  <main id="menu" class="screen" hidden>
+    <div class="menu-card">
+      <header class="brand">
+        <h1>hyper<span>surf</span></h1>
+        <p>Ride a track built from your music. Intense parts run downhill and fast, calm parts climb, and blocks land on the beats.</p>
+      </header>
+
+      <section class="sources" aria-label="Choose a song">
+        <button id="demo-btn" class="source primary" type="button">
+          <span class="source-title">Play the demo</span>
+          <span class="source-sub">A 2½-minute track made in your browser</span>
+        </button>
+
+        <label id="drop" class="source drop" tabindex="0">
+          <span class="source-title">Play an audio file</span>
+          <span class="source-sub">Drop it here or <u>choose a file</u> (MP3, WAV, OGG, FLAC, M4A)</span>
+          <input id="file-input" type="file" accept="audio/*,.mp3,.wav,.ogg,.oga,.flac,.m4a,.aac,.opus,.webm">
+        </label>
+
+        <form id="yt-form" class="source yt" autocomplete="off">
+          <label class="source-title" for="yt-input">Play along with a YouTube video</label>
+          <div class="yt-row">
+            <input id="yt-input" type="text" inputmode="url" placeholder="Paste a link or video ID" spellcheck="false">
+            <button type="submit">Go</button>
+          </div>
+        </form>
+      </section>
+
+      <fieldset class="modes">
+        <legend>Mode</legend>
+        <label><input type="radio" name="mode" value="mono" checked><span><b>Mono</b> Collect blocks into 3×7 grid matches. Greys erase a block.</span></label>
+        <label><input type="radio" name="mode" value="ninja"><span><b>Ninja</b> Faster and denser. Dodge spikes: one wipes your grid.</span></label>
+        <label><input type="radio" name="mode" value="casual"><span><b>Casual</b> Slower, a longer match timer and safe shoulders.</span></label>
+      </fieldset>
+
+      <details class="settings">
+        <summary>Settings</summary>
+        <label class="row">
+          <span>Audio latency <output id="latency-out">0 ms</output></span>
+          <input id="latency" type="range" min="-150" max="300" step="5" value="0">
+        </label>
+        <p class="hint">Raise it if blocks arrive before you hear them (Bluetooth headphones often need 150–250 ms).</p>
+        <label class="row check"><input id="calm" type="checkbox"> <span>Calm visuals: no beat pulses, softer flashes</span></label>
+        <label class="row">
+          <span>Quality</span>
+          <select id="quality">
+            <option value="high">High</option>
+            <option value="medium">Medium</option>
+            <option value="low">Low</option>
+          </select>
+        </label>
+      </details>
+
+      <p id="menu-msg" class="msg" role="status" aria-live="polite"></p>
+
+      <footer class="foot">
+        <p><b>Controls</b> mouse · ←/→ or A/D · gamepad · touch drag. Esc pauses, R restarts.</p>
+        <p>Inspired by <a href="https://en.wikipedia.org/wiki/Audiosurf_2" target="_blank" rel="noopener">Audiosurf 2</a> (Dylan Fitterer). Not affiliated.</p>
+      </footer>
+    </div>
+  </main>
+
+  <section id="loading" class="screen" hidden>
+    <div class="panel">
+      <h2 data-load="title">Analysing</h2>
+      <div class="bar"><div data-load="bar"></div></div>
+      <p class="muted" data-load="stage">Starting…</p>
+    </div>
+  </section>
+
+  <section id="pause" class="screen" hidden>
+    <div class="panel">
+      <h2>Paused</h2>
+      <div class="actions">
+        <button id="resume-btn" class="primary" type="button">Resume</button>
+        <button id="pause-restart-btn" type="button">Restart</button>
+        <button id="pause-menu-btn" type="button">Menu</button>
+      </div>
+    </div>
+  </section>
+
+  <section id="results" class="screen" hidden>
+    <div class="panel results">
+      <p class="muted" data-res="mode"></p>
+      <h2 data-res="title"></h2>
+      <dl class="tally">
+        <div><dt>Score</dt><dd data-res="raw"></dd></div>
+      </dl>
+      <ul class="bonuses" data-res="bonuses"></ul>
+      <dl class="tally final">
+        <div><dt>Final</dt><dd data-res="final"></dd></div>
+      </dl>
+      <p class="best" data-res="best"></p>
+      <p class="muted small" data-res="stats"></p>
+      <div class="actions">
+        <button id="restart-btn" class="primary" type="button">Play again <kbd>R</kbd></button>
+        <button id="menu-btn" type="button">Menu</button>
+      </div>
+    </div>
+  </section>
+
+  <pre id="debug" class="debug" hidden></pre>
+  <noscript><p class="noscript">hypersurf needs JavaScript.</p></noscript>
+</body>
+</html>
