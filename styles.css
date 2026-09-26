@@ -668,3 +668,4 @@ body.calm .stack .cb { animation: none !important; }
   .res-gauges .gauge .lbl { font-size: 11px; letter-spacing: .12em; }
   .res-title { font-size: 22px; }
 }
+body:not([data-state="play"]) #zone { display: none; }
