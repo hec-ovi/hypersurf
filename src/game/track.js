@@ -5,6 +5,7 @@
 
 import * as THREE from 'three/webgpu';
 import { planChunks, chunkAt } from './trackpath.js';
+import { markRange } from './buffers.js';
 
 /**
  * Cross-section, counter-clockwise seen from behind: [lateral, height] per
@@ -17,6 +18,8 @@ const PROFILE = [
 const PARTS = [0, 1, 1, 1, 2, 1, 1, 1];
 const SEGMENTS = PROFILE.length;
 const RING = SEGMENTS * 2;
+
+const ATTRS = ['position', 'normal', 'aData', 'aTint'];
 
 export const CHUNK_LENGTH = 50;
 export const CHUNK_NODES = 96;
@@ -56,9 +59,9 @@ export class TrackMesh {
     this.map = map;
     this.beats = beats;
     this.plan = planChunks(map.nodes, CHUNK_LENGTH, CHUNK_NODES);
-    for (const slot of this.pool) {
-      slot.chunk = -1;
-      slot.mesh.visible = false;
+    for (let i = 0; i < this.pool.length; i++) {
+      this.pool[i].chunk = -1;
+      this.pool[i].mesh.visible = false;
     }
   }
 
@@ -69,8 +72,10 @@ export class TrackMesh {
     const c0 = chunkAt(plan, d - this.behind);
     let c1 = chunkAt(plan, d + this.ahead);
     if (c1 - c0 + 1 > this.pool.length) c1 = c0 + this.pool.length - 1;
-    // Free slots outside the range.
-    for (const slot of this.pool) {
+    // Free slots outside the range. (Indexed loops: this runs every frame.)
+    const pool = this.pool, n = pool.length;
+    for (let i = 0; i < n; i++) {
+      const slot = pool[i];
       if (slot.chunk !== -1 && (slot.chunk < c0 || slot.chunk > c1)) {
         slot.chunk = -1;
         slot.mesh.visible = false;
@@ -78,16 +83,17 @@ export class TrackMesh {
     }
     for (let c = c0; c <= c1; c++) {
       let found = false;
-      for (const slot of this.pool) if (slot.chunk === c) { found = true; break; }
+      for (let i = 0; i < n; i++) if (pool[i].chunk === c) { found = true; break; }
       if (found) continue;
-      for (const slot of this.pool) {
-        if (slot.chunk !== -1) continue;
-        this._build(slot, c);
+      for (let i = 0; i < n; i++) {
+        if (pool[i].chunk !== -1) continue;
+        this._build(pool[i], c);
         break;
       }
     }
     let active = 0;
-    for (const slot of this.pool) {
+    for (let i = 0; i < n; i++) {
+      const slot = pool[i];
       if (slot.chunk === -1) continue;
       slot.mesh.position.set(slot.ox - origin.x, slot.oy - origin.y, slot.oz - origin.z);
       active++;
@@ -131,12 +137,7 @@ export class TrackMesh {
         }
       }
     }
-    for (const name of ['position', 'normal', 'aData', 'aTint']) {
-      const attr = g.attributes[name];
-      attr.clearUpdateRanges();
-      attr.addUpdateRange(0, v * attr.itemSize);
-      attr.needsUpdate = true;
-    }
+    for (let i = 0; i < ATTRS.length; i++) markRange(g.attributes[ATTRS[i]], v);
     g.setDrawRange(0, (b - a) * SEGMENTS * 6);
     const sphere = g.boundingSphere;
     sphere.center.set((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);

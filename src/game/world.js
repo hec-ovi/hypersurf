@@ -17,6 +17,7 @@ import { skyMaterial, pillarMaterial, ringMaterial, debrisMaterial } from './mat
 import { gradientAt } from './palette.js';
 import { mulberry32 } from '../audio/random.js';
 import { ringNodes } from './trackpath.js';
+import { markRange } from './buffers.js';
 
 const NODES_PER_SLOT = 12;
 const PER_SLOT = 9;
@@ -193,19 +194,14 @@ export class World {
     }
     this.rings.count = n;
     if (n === 0) return;
-    const im = this.rings.instanceMatrix;
-    im.clearUpdateRanges();
-    im.addUpdateRange(0, n * 16);
-    im.needsUpdate = true;
-    this.ringInst.clearUpdateRanges();
-    this.ringInst.addUpdateRange(0, n * 4);
-    this.ringInst.needsUpdate = true;
+    markRange(this.rings.instanceMatrix, n);
+    markRange(this.ringInst, n);
   }
 
   _writeSlot(j, r, origin) {
     const nd = this.map.nodes, k = j * NODES_PER_SLOT;
     const P = this.aPos.array, S = this.aSize.array;
-    const rand = mulberry32(0x5eed + j * 7919);
+    this._rs = (0x5eed + j * 7919) >>> 0;
     const px = nd.pos[k * 3], py = nd.pos[k * 3 + 1], pz = nd.pos[k * 3 + 2];
     // Horizontal right and forward of the node.
     const fx = nd.fwd[k * 3], fz = nd.fwd[k * 3 + 2];
@@ -215,20 +211,28 @@ export class World {
       // Instances are ordered depth-band-major (q · RING + r), so a tier that
       // draws only the first RING · 3 still has pillars in every band.
       const i = q * RING + r;
-      const [near, far] = DEPTHS[q % 3];
+      const near = DEPTHS[q % 3][0], far = DEPTHS[q % 3][1];
       const side = (q + j) % 2 === 0 ? 1 : -1;
-      const out = near + (far - near) * rand();
-      const along = (rand() - 0.5) * 40;
+      const out = near + (far - near) * this._rand();
+      const along = (this._rand() - 0.5) * 40;
       const x = px + rx * side * out + hx * along, z = pz + rz * side * out + hz * along;
-      const width = 3 + rand() * (q % 3 === 0 ? 4 : 11);
-      const height = (q % 3 === 0 ? 10 : 26) + rand() * (q % 3 === 0 ? 30 : 100);
-      const below = 260 + rand() * 60;
-      const y = py - 18 - rand() * 30;
+      const width = 3 + this._rand() * (q % 3 === 0 ? 4 : 11);
+      const height = (q % 3 === 0 ? 10 : 26) + this._rand() * (q % 3 === 0 ? 30 : 100);
+      const below = 260 + this._rand() * 60;
+      const y = py - 18 - this._rand() * 30;
       const band = (j * 7 + q * 5) % 16;
       const clear = this._clearOfTrack(x, z, k, width);
       P[i * 4] = x - origin.x; P[i * 4 + 1] = y - origin.y; P[i * 4 + 2] = z - origin.z; P[i * 4 + 3] = band;
-      S[i * 4] = clear ? width : 0; S[i * 4 + 1] = clear ? height : 0; S[i * 4 + 2] = clear ? below : 0; S[i * 4 + 3] = rand();
+      S[i * 4] = clear ? width : 0; S[i * 4 + 1] = clear ? height : 0; S[i * 4 + 2] = clear ? below : 0; S[i * 4 + 3] = this._rand();
     }
+  }
+
+  /** mulberry32 on instance state: the slot writer's PRNG without a closure per slot. */
+  _rand() {
+    let t = (this._rs = (this._rs + 0x6d2b79f5) >>> 0);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   }
 
   /** Whether (x, z) keeps its distance from the track around node k (winding tracks come back). */

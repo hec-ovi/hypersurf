@@ -9,6 +9,7 @@ import { BLOCK } from '../audio/songmap.js';
 import { LANE_WIDTH } from './rules.js';
 import { gradientAt } from './palette.js';
 import { makeSample } from './trackpath.js';
+import { markRange } from './buffers.js';
 import { blockMaterial, hazardMaterial, powerMaterial, tintMaterial } from './materials.js';
 
 const TAKEN = 1;
@@ -250,16 +251,8 @@ function writeMatrix(m, n, s, lx, height, origin, scale, spin) {
 function commit(mesh, count, withInst) {
   mesh.count = count;
   if (count === 0) return;
-  const im = mesh.instanceMatrix;
-  im.clearUpdateRanges();
-  im.addUpdateRange(0, count * 16);
-  im.needsUpdate = true;
-  if (withInst) {
-    const a = mesh.geometry.attributes.aInst;
-    a.clearUpdateRanges();
-    a.addUpdateRange(0, count * 4);
-    a.needsUpdate = true;
-  }
+  markRange(mesh.instanceMatrix, count);
+  if (withInst) markRange(mesh.geometry.attributes.aInst, count);
 }
 
 /** Cheap deterministic pseudo-random in [0, 1). */
