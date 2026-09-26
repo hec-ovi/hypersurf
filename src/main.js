@@ -21,7 +21,7 @@ import { LEAD_IN, TAIL, makeGrid } from './audio/songmap.js';
 import { Sfx } from './audio/sfx.js';
 import { parseVideoId, YouTubePlayer, needsPlay, STATE as VIDEO } from './live/youtube.js';
 import { captureSupport, captureTabAudio, stopStream, CAPTURE_MESSAGES } from './live/capture.js';
-import { LiveSession, LiveClock } from './live/session.js';
+import { LiveSession, LiveClock, SESSION } from './live/session.js';
 import { LiveMap } from './live/livemap.js';
 import { LiveDock } from './live/panel.js';
 import { SongClock } from './audio/clock.js';
@@ -133,7 +133,8 @@ window.__hypersurf = {
 function loadSettings() {
   // Calm visuals start on for people who ask their system for reduced motion.
   const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const defaults = { latency: 0, calm: reduced, quality: 'high', mode: 'mono', sfx: true };
+  // capture: the tab-capture delay this browser last measured or was set to (ms).
+  const defaults = { latency: 0, calm: reduced, quality: 'high', mode: 'mono', sfx: true, capture: null };
   try {
     const raw = storage && storage.getItem(SETTINGS_KEY);
     const v = raw ? JSON.parse(raw) : {};
@@ -143,6 +144,7 @@ function loadSettings() {
       quality: ['high', 'medium', 'low'].includes(v.quality) ? v.quality : defaults.quality,
       mode: RULES[v.mode] ? v.mode : defaults.mode,
       sfx: typeof v.sfx === 'boolean' ? v.sfx : defaults.sfx,
+      capture: Number.isFinite(v.capture) ? Math.max(0, Math.min(800, v.capture)) : defaults.capture,
     };
   } catch {
     return defaults;
@@ -316,6 +318,7 @@ function playYouTube(input) {
   dock.status('Loading the video…');
   dock.canStart(false);
   dock.octave(app.octave);
+  dock.latency(app.settings.capture === null ? SESSION.defaultLatency : app.settings.capture / 1000);
   if (app.view && app.view.gfx.renderer) app.view.resize();
   setState('live');
   // The player loads in the background: Back works meanwhile, and nothing waits on it.
@@ -323,7 +326,7 @@ function playYouTube(input) {
   const current = () => app.live === live;
   yt.create().then(() => {
     if (current() && yt.ready && !yt.error) {
-      dock.status('Ready. Press Start and share this tab with its audio.', true);
+      dock.status('Ready. Press Start and share this tab with its audio.', 'ok');
       dock.canStart(true);
     }
   }, (err) => {
@@ -516,7 +519,8 @@ function startYouTube() {
   (async () => {
     try {
       live.stream = await sharing;
-      live.session = await new LiveSession(app.ctx, live.stream, { clickBus: app.ctx.destination }).open();
+      const latency = app.settings.capture === null ? SESSION.defaultLatency : app.settings.capture / 1000;
+      live.session = await new LiveSession(app.ctx, live.stream, { clickBus: app.ctx.destination, latency }).open();
       await calibrateLive();
       await beginLiveRun();
     } catch (err) {
@@ -534,14 +538,40 @@ function startYouTube() {
   })();
 }
 
-/** Eight clicks through our own output, heard back in the capture: the capture delay. */
+/**
+ * Eight clicks through our own output, heard back in the capture: the
+ * capture delay. A video already playing is paused for it (the run starts
+ * it again), so the clicks are heard in a quiet tab. If they are not
+ * heard, the run keeps a typical delay and the player can nudge it.
+ */
 async function calibrateLive() {
+  const live = app.live, yt = live.yt;
   setState('analyze');
-  loading('Listening', 0.5, 'Calibrating: listening for eight clicks…');
-  const r = await app.live.session.calibrate();
-  if (!r && app.live.yt) dock.status('The calibration clicks were not heard; timing may be a little off. Is the tab’s audio shared and unmuted?');
-  else if (app.live.yt) dock.status(`Listening. Capture delay ${Math.round(r.latency * 1000)} ms.`, true);
+  loading('Listening', 0.5, 'Calibrating: listening for a few clicks…');
+  if (yt && (yt.state === VIDEO.PLAYING || yt.state === VIDEO.BUFFERING)) yt.pause();
+  const r = await live.session.calibrate();
+  dock.latency(live.session.latency);
+  if (r && yt) {
+    // Kept for next time: a tab capture's delay is this browser's and machine's.
+    app.settings.capture = Math.round(r.latency * 1000);
+    saveSettings();
+    dock.status(`Listening. Capture delay ${Math.round(r.latency * 1000)} ms.`, 'ok');
+  } else if (yt) {
+    dock.status('Listening, with a typical capture delay. If blocks land before or after the beat, adjust the delay below.', 'hint');
+  }
   loading(null, 1, null);
+}
+
+/** The timing control: nudge the capture delay by `steps` (kept for next time). */
+function nudgeLatency(steps) {
+  const session = app.live && app.live.session;
+  if (!session) return;
+  session.setLatency(session.latency + steps * SESSION.nudge);
+  const ms = Math.round(session.latency * 1000);
+  app.settings.capture = ms;
+  saveSettings();
+  dock.latency(session.latency);
+  if (app.state === 'play') app.hud.toast(`Capture delay ${ms} ms`);
 }
 
 /** A live run: a fresh LiveMap grown from what the session hears. */
@@ -1053,7 +1083,7 @@ function wireMenu() {
     }
   });
 
-  dock.wire({ start: startYouTube, back: toMenu, octave: setOctave });
+  dock.wire({ start: startYouTube, back: toMenu, octave: setOctave, nudge: nudgeLatency });
 
   $('resume-btn').addEventListener('click', resume);
   $('pause-restart-btn').addEventListener('click', restart);
@@ -1073,6 +1103,8 @@ function wireMenu() {
       window.__hypersurf.autopilot = !app.autopilot;
     } else if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && app.live && app.state === 'play') {
       setOctave(app.octave + (e.code === 'BracketLeft' ? -1 : 1));
+    } else if ((e.code === 'Minus' || e.code === 'Equal') && app.live && app.state === 'play') {
+      nudgeLatency(e.code === 'Minus' ? -1 : 1);
     }
   });
   document.addEventListener('visibilitychange', () => {

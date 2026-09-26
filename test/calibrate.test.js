@@ -51,6 +51,61 @@ test('calibration finds the capture latency in silence and under music', () => {
   assert.ok(r.latency - 0.061 > -0.004 && r.latency - 0.061 < 0.012, `under music: measured ${r.latency}`);
 });
 
+/** `seconds` of the demo from `from`, scaled to an RMS level (a loud video is about 0.25, −12 dBFS). */
+let demoMono = null;
+function music(from, seconds, rms) {
+  const demo = demoMono || (demoMono = mono(generateDemoSong({ sampleRate: SR }).channels));
+  const bed = demo.slice(Math.round(from * SR), Math.round((from + seconds) * SR));
+  let e = 0;
+  for (const v of bed) e += v * v;
+  const k = rms / Math.sqrt(e / bed.length);
+  for (let i = 0; i < bed.length; i++) bed[i] *= k;
+  return bed;
+}
+
+test('calibration finds delays far past a third of a second', () => {
+  const start = 8, clicks = clickTimes(start + 0.25);
+  const rel = Array.from(clicks, (c) => c - start);
+  for (const latency of [0.18, 0.41, 0.63, 0.78]) {
+    const r = listen(capture(4.5, rel, latency, { gain: 0.3 }), start).measure(clicks);
+    assert.ok(r && r.found === 8, `${latency}: not found`);
+    assert.ok(Math.abs(r.lag - latency) < 0.0005, `${latency}: lag ${r.lag}`);
+    assert.ok(r.latency - latency > 0 && r.latency - latency < 0.01, `${latency}: latency ${r.latency}`);
+  }
+});
+
+test('calibration hears the clicks under a loud video, at any level it plays them', () => {
+  const start = 40, clicks = clickTimes(start + 0.25);
+  const rel = Array.from(clicks, (c) => c - start);
+  for (const [from, latency] of [[62, 0.09], [70, 0.33], [100, 0.61], [110, 0.2]]) {
+    for (const gain of [0.6, 0.3]) {
+      const r = listen(capture(4.5, rel, latency, { gain, bed: music(from, 4.5, 0.25) }), start).measure(clicks);
+      assert.ok(r, `${from} s, gain ${gain}: not heard`);
+      assert.ok(Math.abs(r.lag - latency) < 0.001, `${from} s, gain ${gain}: lag ${r.lag} for ${latency}`);
+    }
+  }
+});
+
+test('calibration never mistakes the music itself for the clicks', () => {
+  const start = 3, clicks = clickTimes(start + 0.25);
+  for (let from = 4; from < 140; from += 9.7) {
+    assert.equal(listen(music(from, 4.5, 0.3), start).measure(clicks), null, `music at ${from} s`);
+  }
+});
+
+test('a hop missing from the capture leaves a gap, not a shift', () => {
+  const start = 12, clicks = clickTimes(start + 0.25);
+  const signal = capture(4.5, Array.from(clicks, (c) => c - start), 0.2);
+  const l = new ClickListener(SR);
+  for (let i = 0, k = 0; i + 512 <= signal.length; i += 512, k++) {
+    if (k >= 60 && k < 64) continue; // ~46 ms lost, over the third click
+    l.push(signal.subarray(i, i + 512), start + i / SR);
+  }
+  const r = l.measure(clicks);
+  assert.ok(r && r.found >= 7, 'the other clicks still line up');
+  assert.ok(Math.abs(r.lag - 0.2) < 0.0005, `lag ${r.lag}`);
+});
+
 test('calibration gives up when the clicks are not in the capture', () => {
   const start = 5, clicks = clickTimes(start + 0.3);
   const rel = Array.from(clicks, (c) => c - start);

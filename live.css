@@ -28,12 +28,17 @@ body[data-live="youtube"] { --dock-w: 513px; } /* 480 + 2 × 16 padding + 1 bord
 .live-panel { display: grid; gap: 10px; align-content: start; }
 .live-status { margin: 0; min-height: 1.4em; color: var(--warm); }
 .live-status.ok { color: var(--mid); }
+.live-status.hint { color: var(--muted); }
 .live-actions { display: flex; gap: 10px; }
 .live-actions button:disabled { opacity: 0.45; cursor: default; filter: none; }
 .live-octave { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 0.85em; }
 .live-octave span { margin-right: 4px; }
 .live-octave button { padding: 0.25em 0.8em; }
 .live-octave button[aria-pressed="true"] { border-color: var(--mid); background: rgba(25, 224, 160, 0.12); color: var(--text); }
+.live-timing { display: flex; align-items: center; gap: 6px; color: var(--muted); font-size: 0.85em; }
+.live-timing span { margin-right: 4px; }
+.live-timing button { padding: 0.25em 0.8em; }
+.live-timing output { min-width: 4.5em; text-align: center; color: var(--text); font-variant-numeric: tabular-nums; }
 .live-note { margin: 0; color: var(--muted); font-size: 0.8em; }
 
 body[data-live="youtube"] #view,

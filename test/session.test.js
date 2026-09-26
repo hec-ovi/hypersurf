@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { LiveSession, LiveClock } from '../src/live/session.js';
+import { LiveSession, LiveClock, SESSION } from '../src/live/session.js';
 import { LiveMap, STATUS } from '../src/live/livemap.js';
 import { synthClick } from '../src/live/calibrate.js';
 import { BLOCK } from '../src/audio/songmap.js';
@@ -10,9 +10,13 @@ import { SR, mono, nearest } from './live-fixtures.js';
 /** Just enough AudioContext for the session's calibration to schedule clicks. */
 function fakeContext() {
   const ctx = {
-    sampleRate: SR, currentTime: 0, scheduled: [], destination: {},
+    sampleRate: SR, currentTime: 0, scheduled: [], gains: [], destination: {},
     createBuffer: (ch, n) => ({ copyToChannel() {}, length: n }),
-    createGain: () => ({ gain: { value: 1 }, connect() {}, disconnect() {} }),
+    createGain: () => {
+      const g = { gain: { value: 1 }, connect() {}, disconnect() {} };
+      ctx.gains.push(g.gain);
+      return g;
+    },
     createBufferSource: () => ({ connect() {}, start: (t) => ctx.scheduled.push(t) }),
   };
   return ctx;
@@ -57,23 +61,120 @@ test('the live path plays the demo: a steady tempo, blocks on its beats, a power
   assert.ok(map.skyline.frames > 140 * session.tracker.frameRate);
 });
 
-test('calibration measures the capture delay from the clicks it scheduled', async () => {
+/** Feed `seconds` of a capture whose first sample reaches us at context time `start`, in hops. */
+function feedCapture(session, signal, start) {
+  for (let i = 0; i + 512 <= signal.length; i += 512) session.feed(Math.round(start * SR) + i, signal.subarray(i, i + 512));
+}
+
+/** A capture from `start` on: `bed` (or silence) with the scheduled clicks `delay` seconds late, at `gain`. */
+function clickCapture(scheduled, start, seconds, delay, { gain = 0.5, bed = null } = {}) {
+  const out = new Float32Array(Math.round(seconds * SR)), click = synthClick(SR);
+  if (bed) out.set(bed.subarray(0, out.length));
+  for (const t of scheduled) {
+    const i0 = Math.round((t + delay - start) * SR);
+    for (let i = 0; i < click.length && i0 + i < out.length; i++) if (i0 + i >= 0) out[i0 + i] += click[i] * gain;
+  }
+  return out;
+}
+
+/** Let the session's promises and timers run until `done()` or ~1 s passes. */
+async function until(done) {
+  for (let i = 0; i < 200 && !done(); i++) await new Promise((resolve) => setTimeout(resolve, 5));
+}
+
+test('calibration waits for the capture to flow, then measures the delay of the clicks it played', async () => {
   const ctx = fakeContext();
   ctx.currentTime = 20;
   const session = new LiveSession(ctx, null);
   const pending = session.calibrate();
+  await until(() => false);
+  assert.equal(ctx.scheduled.length, 0, 'no clicks before the capture delivers');
+  // 0.4 s of a quiet capture: it flows, and the clicks play.
+  feedCapture(session, new Float32Array(Math.round(0.4 * SR)), 19.6);
+  await until(() => ctx.scheduled.length === 8);
   assert.equal(ctx.scheduled.length, 8);
-  // The capture: silence with each click arriving 47 ms after it played.
-  const seconds = 4, start = 20, out = new Float32Array(seconds * SR), click = synthClick(SR);
-  for (const t of ctx.scheduled) {
-    const i0 = Math.round((t + 0.047 - start) * SR);
-    for (let i = 0; i < click.length; i++) out[i0 + i] += click[i] * 0.5;
-  }
-  for (let i = 0; i + 512 <= out.length; i += 512) session.feed(Math.round(start * SR) + i, out.subarray(i, i + 512));
+  feedCapture(session, clickCapture(ctx.scheduled, 20, 4.5, 0.047), 20);
   const r = await pending;
   assert.ok(r && r.found >= 7, 'clicks heard');
-  assert.ok(r.latency > 0.045 && r.latency < 0.057, `latency ${r.latency}`);
+  assert.ok(Math.abs(r.lag - 0.047) < 0.001, `lag ${r.lag}`);
+  // The latency includes the onset front end's framing (a few ms).
+  assert.ok(r.latency > 0.047 && r.latency < 0.057, `latency ${r.latency}`);
   assert.equal(session.latency, r.latency);
+  assert.equal(session.calibrations, 1);
+});
+
+test('calibration hears a slow, late-starting capture under a loud video', async () => {
+  // Emulates a real tab capture: frames start flowing only after a while,
+  // the delay is far above the old 0.35 s search range, a hop goes missing
+  // and a loud master plays underneath.
+  const ctx = fakeContext();
+  ctx.currentTime = 30;
+  const session = new LiveSession(ctx, null);
+  const pending = session.calibrate();
+  feedCapture(session, new Float32Array(Math.round(0.35 * SR)), 30.4); // flows only from 30.4
+  ctx.currentTime = 30.75;
+  await until(() => ctx.scheduled.length === 8);
+  const demo = mono(generateDemoSong({ sampleRate: SR }).channels);
+  const bed = demo.slice(Math.round(64 * SR), Math.round(70 * SR));
+  let e = 0;
+  for (const v of bed) e += v * v;
+  const k = 0.25 / Math.sqrt(e / bed.length); // about −12 dBFS RMS
+  for (let i = 0; i < bed.length; i++) bed[i] *= k;
+  const start = 30.75, cap = clickCapture(ctx.scheduled, start, 5, 0.52, { gain: SESSION.clickGain, bed });
+  for (let i = 0; i + 512 <= cap.length; i += 512) {
+    if (i / 512 === 120) continue; // a dropped hop
+    session.feed(Math.round(start * SR) + i, cap.subarray(i, i + 512));
+  }
+  const r = await pending;
+  assert.ok(r, 'clicks heard');
+  assert.ok(Math.abs(r.lag - 0.52) < 0.001, `lag ${r.lag}`);
+  assert.equal(session.calibrations, 1);
+});
+
+test('calibration tries once more, louder, then keeps a sane delay the player can nudge', async () => {
+  const ctx = fakeContext();
+  ctx.currentTime = 10;
+  const session = new LiveSession(ctx, null, { latency: 0.07 });
+  const pending = session.calibrate();
+  feedCapture(session, new Float32Array(Math.round(0.4 * SR)), 9.6);
+  await until(() => ctx.scheduled.length === 8);
+  // First train: nothing comes back (a muted tab).
+  feedCapture(session, new Float32Array(Math.round(4.5 * SR)), 10);
+  ctx.currentTime = 14.5;
+  await until(() => ctx.scheduled.length === 16);
+  assert.equal(ctx.scheduled.length, 16, 'a second train');
+  assert.ok(ctx.gains[1].value > ctx.gains[0].value, 'louder');
+  // Second train: heard.
+  feedCapture(session, clickCapture(ctx.scheduled.slice(8), 14.5, 4.5, 0.12, { gain: 0.8 }), 14.5);
+  const r = await pending;
+  assert.ok(r && Math.abs(r.lag - 0.12) < 0.001, 'heard the second time');
+  assert.equal(session.calibrations, 2);
+
+  // Never heard: the delay stays where it was, and the player can move it.
+  ctx.currentTime = 10;
+  const quiet = new LiveSession(ctx, null, { latency: 0.07 });
+  const none = quiet.calibrate();
+  feedCapture(quiet, new Float32Array(Math.round(0.4 * SR)), 9.6);
+  await until(() => ctx.scheduled.length === 24);
+  feedCapture(quiet, new Float32Array(Math.round(4.5 * SR)), 10);
+  ctx.currentTime = 14.5;
+  await until(() => ctx.scheduled.length === 32);
+  feedCapture(quiet, new Float32Array(Math.round(4.5 * SR)), 14.5);
+  assert.equal(await none, null);
+  assert.equal(quiet.latency, 0.07);
+  assert.equal(quiet.calibrations, 2, 'one retry, no more');
+  quiet.setLatency(quiet.latency + 2 * SESSION.nudge);
+  assert.ok(Math.abs(quiet.latency - 0.08) < 1e-9);
+  quiet.setLatency(-1);
+  assert.equal(quiet.latency, 0, 'never negative');
+});
+
+test('calibration gives up quickly when the capture never delivers', async () => {
+  const ctx = fakeContext();
+  const session = new LiveSession(ctx, null, { flowTimeout: 0.05 });
+  assert.equal(await session.calibrate(), null);
+  assert.equal(ctx.scheduled.length, 0, 'no clicks into a dead capture');
+  assert.equal(session.latency, SESSION.defaultLatency);
 });
 
 test('the live clock stops while held and maps heard time to song time', () => {

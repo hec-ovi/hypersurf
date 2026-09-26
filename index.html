@@ -157,6 +157,12 @@
         <button type="button" data-octave="0" aria-pressed="true">1</button>
         <button type="button" data-octave="1" title="Twice per beat ( ] )">2</button>
       </div>
+      <div class="live-timing" role="group" aria-label="Timing">
+        <span>Capture delay</span>
+        <button type="button" data-nudge="-1" title="Blocks come before the beat: less delay ( - )" aria-label="Less delay">−</button>
+        <output data-live="latency">60 ms</output>
+        <button type="button" data-nudge="1" title="Blocks come after the beat: more delay ( = )" aria-label="More delay">+</button>
+      </div>
       <p class="live-note">Start asks to share this tab: choose it and keep “Also share tab audio” on. The game listens to the video’s sound to find the beat, as it plays. Nothing is recorded, stored or sent.</p>
       <p class="live-note">Video by YouTube. By playing it you agree to the <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener">YouTube Terms of Service</a>; see also the <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Google Privacy Policy</a>. You are responsible for what you play.</p>
     </div>
