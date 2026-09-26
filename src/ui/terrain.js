@@ -9,8 +9,8 @@ const ROWS = 64;
 const STARS = 160;
 const HORIZON = 0.58; // horizon height as a fraction of the screen
 const Z_NEAR = 2.2;
-const Z_FAR = 46;
-const CAM_H = 1.6;
+const Z_FAR = 34;
+const CAM_H = 2.4;
 const WAVE = 0.15; // rad/s
 
 /** Terrain height at world (x, z) and time t: two sine octaves and a slow swell. */
@@ -118,10 +118,10 @@ export class TerrainSky {
     ctx.globalAlpha = 1;
     // Terrain: rows far to near, perspective-projected.
     const hy = h * HORIZON;
-    const f = (h - hy) * Z_NEAR / CAM_H * 0.92; // focal length: the nearest row sits near the bottom
+    const f = (h - hy) * Z_NEAR / CAM_H * 1.45; // focal length: the nearest row sits near the bottom
     const scroll = t * 1.2;
     for (let r = ROWS - 1; r >= 0; r--) {
-      const zr = Z_NEAR + (Z_FAR - Z_NEAR) * (r / (ROWS - 1)) ** 1.35;
+      const zr = Z_NEAR + (Z_FAR - Z_NEAR) * (r / (ROWS - 1)) ** 1.15;
       const span = (w / 2) * zr / f * 1.08;
       ctx.fillStyle = this.rowStyle[r];
       let nHi = 0;
@@ -132,7 +132,7 @@ export class TerrainSky {
         const x = ((c + 0.5) / COLS - 0.5) * 2 * span + this.jx[i] * span * 0.03;
         const y = terrainHeight(x, z + scroll, t);
         const sx = w / 2 + (x * f) / z;
-        const sy = hy + ((CAM_H - y * 0.9) * f) / z * 0.5 + (h - hy) * 0.08;
+        const sy = hy + ((CAM_H - y * 1.5) * f) / z * 0.62;
         if (sy < hy || sy > h) continue;
         const s = this.sz[i] * (r < 16 ? 1.25 : 1);
         if (y > 0.72) { crest[nHi * 3] = sx; crest[nHi * 3 + 1] = sy; crest[nHi * 3 + 2] = s; nHi++; continue; }
