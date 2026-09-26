@@ -1,25 +1,13 @@
-# Design brief: a browser successor to Audiosurf 2
+# Research and design brief: a browser successor to Audiosurf 2
 
-Working title: **Surfline**. A static site (GitHub Pages) with three song sources:
+Project: **hypersurf**. A static site (GitHub Pages) with three song sources:
 1. **Local audio file.** Full offline analysis with whole-song lookahead, as in Audiosurf.
 2. **Built-in synthesized demo song.** Generated in-browser, and doubles as the analysis test fixture.
-3. **YouTube.** A visible, policy-compliant embedded player. The default gameplay grid comes from documented player timing plus a human tap-tempo. Live tab-audio listening is an opt-in experiment with a policy risk flag (see §2.2 and §5).
+3. **YouTube.** A visible embedded player; the game analyzes the tab audio live, after the user shares it through the browser prompt (see §2.2 and §5). Early research also covered a tap-tempo "Beat Sync" alternative that never touches audio; the project chose live listening.
 
 Tech: three.js `WebGPURenderer` (it falls back to its WebGL2 backend automatically), TSL node materials, bloom and post-processing, instancing everywhere, and zero allocation per frame.
 
 Tags: **(unverified)** means a skeptic could not confirm the point. **(single source)** means one community source. Corrections from the skeptics are already applied.
-
----
-
-## 0. Answer to the user's question ("why you say is not possible?")
-
-Part of it is possible and part isn't. The earlier answer merged the two.
-
-- **Not possible:** reading audio samples through the YouTube embed. The IFrame Player API exposes only playback, volume, time and state ([reference](https://developers.google.com/youtube/iframe_api_reference)). The same-origin policy also stops the page from reaching the `<video>` inside the youtube.com iframe ([MDN](https://developer.mozilla.org/en-US/docs/Web/Security/Same-origin_policy)), so `createMediaElementSource`/`captureStream` cannot be called on it.
-- **Technically possible:** capturing **your own tab's** audio with `getDisplayMedia({video:true, audio:true, preferCurrentTab:true})`. Chromium's tab loopback mixes every audio stream in the WebContents, cross-origin iframes included (source reading: [loopback_stream.h](https://raw.githubusercontent.com/chromium/chromium/main/services/audio/loopback_stream.h), [forwarding_audio_stream_factory.h](https://raw.githubusercontent.com/chromium/chromium/main/content/browser/media/forwarding_audio_stream_factory.h)). This works only on desktop Chrome, Edge and Opera. Firefox and Safari return no audio track, and mobile has no `getDisplayMedia` ([BCD](https://raw.githubusercontent.com/mdn/browser-compat-data/main/api/MediaDevices.json)).
-- **What it costs:**
-  - *Lookahead.* Live audio has no future, so you cannot see Audiosurf's "road ahead".
-  - *Policy.* YouTube Developer Policies III.I forbid using "any technology other than YouTube API Services to access … any portion of any YouTube audiovisual content" ([policies](https://developers.google.com/youtube/terms/developer-policies)). That is a policy and legal risk, not a technical wall. §5 has the exact quotes.
 
 ---
 
