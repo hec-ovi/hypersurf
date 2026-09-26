@@ -10,12 +10,16 @@ import { markRange } from './buffers.js';
 /**
  * Cross-section, counter-clockwise seen from behind: [lateral, height] per
  * point and a part per segment (0 surface, 1 rail, 2 underside). Segments
- * get their own vertices so each face has a flat normal.
+ * get their own vertices so each face has a flat normal. The surface is
+ * split into six strips edged on the lane lines: through a corkscrew the
+ * track rolls ~9° per node, and a single quad across its whole width
+ * twisted enough to zig-zag the lane lines.
  */
 const PROFILE = [
-  [-4.7, 0], [4.7, 0], [4.7, 0.45], [5.4, 0.45], [5.4, -0.6], [-5.4, -0.6], [-5.4, 0.45], [-4.7, 0.45],
+  [-4.7, 0], [-3, 0], [-1.5, 0], [0, 0], [1.5, 0], [3, 0], [4.7, 0],
+  [4.7, 0.45], [5.4, 0.45], [5.4, -0.6], [-5.4, -0.6], [-5.4, 0.45], [-4.7, 0.45],
 ];
-const PARTS = [0, 1, 1, 1, 2, 1, 1, 1];
+const PARTS = [0, 0, 0, 0, 0, 0, 1, 1, 1, 2, 1, 1, 1];
 const SEGMENTS = PROFILE.length;
 const RING = SEGMENTS * 2;
 
