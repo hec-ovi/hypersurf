@@ -28,10 +28,11 @@ export class Ship {
   constructor(scene, uniforms) {
     this.group = new THREE.Group();
     this.hull = new THREE.Mesh(hullGeometry(), shipMaterial(uniforms));
-    const flame = new THREE.ConeGeometry(0.28, 1.4, 10, 1, true);
-    flame.rotateX(Math.PI / 2); // point +z (backwards)
-    flame.translate(0, 0.18, 1.6);
-    this.thruster = new THREE.Mesh(flame, thrusterMaterial(uniforms));
+    // A slim cone pointing backwards (+z): nozzle at z 0.95, tip at 2.55.
+    const flame = new THREE.ConeGeometry(0.22, 1.6, 10, 1, true);
+    flame.rotateX(Math.PI / 2); // apex backwards
+    flame.translate(0, 0.18, 1.75);
+    this.thruster = new THREE.Mesh(flame, thrusterMaterial(uniforms, 0.95, 1.6));
     this.group.add(this.hull, this.thruster);
     this.group.matrixAutoUpdate = false;
     scene.add(this.group);

@@ -180,9 +180,20 @@ export function shipMaterial(u) {
   return m;
 }
 
-export function thrusterMaterial(u) {
-  const m = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide });
-  m.colorNode = u.trackColor.mul(u.intensity.mul(3).add(3)).add(vec3(1.5));
+/**
+ * Thruster flame: hot white at the nozzle, the track colour along the
+ * plume, fading to nothing at the tip, with a fast flicker. `nozzle` and
+ * `length` locate the cone along +z in geometry space.
+ */
+export function thrusterMaterial(u, nozzle, length) {
+  const m = new THREE.MeshBasicNodeMaterial({ side: THREE.DoubleSide, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+  m.colorNode = Fn(() => {
+    const f = saturate(float(1).sub(positionGeometry.z.sub(nozzle).div(length)));
+    const flicker = sin(u.time.mul(90)).mul(0.08).add(sin(u.time.mul(37)).mul(0.07)).add(1);
+    const plume = u.trackColor.mul(u.intensity.mul(1.2).add(1)).mul(f.mul(f));
+    const core = vec3(0.7).mul(pow(f, 8));
+    return plume.add(core).mul(flicker);
+  })();
   return m;
 }
 
