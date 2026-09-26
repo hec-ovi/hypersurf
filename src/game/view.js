@@ -13,6 +13,7 @@ import { ChaseCamera } from './camera.js';
 import { World } from './world.js';
 import { TrackPath, makeSample, nodeBeats } from './trackpath.js';
 import { hexToLinear, PALETTE } from './palette.js';
+import { MODES } from '../audio/songmap.js';
 
 export const DRAW_DISTANCE = 650;
 const REBASE_DISTANCE = 500;
@@ -28,6 +29,8 @@ export class GameView {
     this.path = null;
     this.map = null;
     this.intensity = 0;
+    this.speed01 = 0;
+    this._calm = false;
     this.compiled = false;
     this.rebases = 0;
   }
@@ -61,6 +64,11 @@ export class GameView {
     this.world.setPillars(this.gfx.qualityName !== 'low');
   }
 
+  /** Calm visuals: no speed blur punch or aberration, softer everything. */
+  set calm(on) {
+    this._calm = !!on;
+  }
+
   /** Show a new SongMap. */
   load(map) {
     this.map = map;
@@ -92,6 +100,9 @@ export class GameView {
       // stop in a hidden tab; never let loading hang on it. Anything not
       // compiled by then compiles on first use.
       await Promise.race([this.gfx.compile(), new Promise((resolve) => setTimeout(resolve, 4000))]);
+      // The post chain's own passes compile on their first render: do it
+      // now, behind the loading screen.
+      this.gfx.render();
     } finally {
       meshes.forEach((m, i) => { m.count = counts[i]; });
     }
@@ -126,8 +137,20 @@ export class GameView {
     u.beat.value = juice ? juice.beat : 0;
     u.shipFlash.value = juice ? juice.ship : 0;
     u.starPhase.value += I * dt * 0.03;
-    this.gfx.bloomStrength.value = 0.55 + 0.6 * I + (juice ? juice.bloom : 0);
-    this.gfx.saturation.value = 1 - 0.6 * (juice ? juice.desaturate : 0);
+
+    // Post: bloom with intensity and bursts; radial speed blur above 60% of
+    // the mode's speed range (AS2's formula with speed for camera bias), off
+    // in loops except for the power-block punch; aberration with I².
+    const gfx = this.gfx;
+    const mode = MODES[this.map.mode] || MODES.mono;
+    this.speed01 = Math.min(1, Math.max(0, (s.speed - mode.speedMin) / (mode.speedMax - mode.speedMin)));
+    const calm = this._calm ? 0.4 : 1;
+    const speedBlur = s.loop ? 0 : Math.min(1.5, Math.max(0, (this.speed01 - 0.6) * 5)) * 0.012;
+    const punch = juice ? juice.lens * 0.018 : 0;
+    gfx.blur.value = Math.max(speedBlur, punch) * calm * Math.min(1, swoop * 2);
+    gfx.aberration.value = this._calm ? 0 : 0.003 * I * I + (juice ? juice.lens * 0.003 : 0);
+    gfx.bloomStrength.value = 0.5 + 0.5 * I + (juice ? juice.bloom : 0);
+    gfx.saturation.value = 1 - 0.6 * (juice ? juice.desaturate : 0);
 
     const tAhead = this.path.timeAtDistance(s.dist + DRAW_DISTANCE);
     this.track.update(s.dist, this.origin);

@@ -392,7 +392,10 @@ function frame() {
   const swoop = Math.min(1, (app.viewT - app.runStart) / SWOOP);
   view.frame(app.viewT, app.state === 'play' ? dt : 0, t0 / 1000, app.ship.x, app.ship.v, app.rules.state, app.juice, swoop);
   view.render();
-  if (app.state === 'play') view.gfx.adapt(frameMs, t0);
+  if (app.state === 'play') {
+    view.gfx.adapt(frameMs, t0);
+    if (view.gfx.governor.lowerRequested) lowerQuality();
+  }
 
   const info = view.gfx.info;
   stats.drawCalls = info.drawCalls;
@@ -416,6 +419,16 @@ function frame() {
   stats.flashes.allowed = app.juice.limiter.allowed;
   stats.flashes.denied = app.juice.limiter.denied;
   if (DEBUG) debugOverlay(t0);
+}
+
+/** Dynamic resolution bottomed out and frames are still slow: drop to the low tier once. */
+function lowerQuality() {
+  const gfx = app.view.gfx;
+  app.view.setQuality('low');
+  gfx.governor.acknowledgeLower(gfx.quality.minScale);
+  gfx.resetTiming(performance.now());
+  stats.quality = gfx.qualityName;
+  stats.autoLowered = true;
 }
 
 /** Advance the game to the heard song time in fixed steps. */
@@ -566,6 +579,7 @@ function wireMenu() {
   calm.addEventListener('change', () => {
     app.settings.calm = calm.checked;
     app.juice.calm = calm.checked;
+    if (app.view) app.view.calm = calm.checked;
     saveSettings();
   });
   const quality = $('quality');
@@ -623,6 +637,7 @@ async function boot() {
   app.viewReady = app.view.init().then(() => {
     stats.backend = app.view.backend;
     stats.quality = app.view.gfx.qualityName;
+    app.view.calm = app.settings.calm;
     app.view.gfx.renderer.setAnimationLoop(frame);
     return true;
   }, (err) => {
