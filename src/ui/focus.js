@@ -24,6 +24,7 @@ export class FocusManager {
     this.polling = false;
     this.enabled = true;
     this.onPad = null; // called with true/false as a gamepad (dis)connects
+    this.onIdleBack = null; // Start / B while no screen owns focus (play)
     this._poll = () => this.poll();
     addEventListener('gamepadconnected', () => { this._padChange(); this._startPoll(); });
     addEventListener('gamepaddisconnected', () => this._padChange());
@@ -145,8 +146,12 @@ export class FocusManager {
     const pad = this.gamepad;
     if (!pad) { this.polling = false; return; }
     requestAnimationFrame(this._poll);
-    if (!this.root || !this.enabled) { this.pad.update(this.padDown, performance.now(), this.padOut); return; }
     this.pad.read(pad, this.padDown);
+    if (!this.root || !this.enabled) {
+      // In play only Start / B matter: they pause.
+      for (const a of this.pad.update(this.padDown, performance.now(), this.padOut)) if (a === 'back' && this.onIdleBack) this.onIdleBack();
+      return;
+    }
     for (const a of this.pad.update(this.padDown, performance.now(), this.padOut)) this.act(a);
   }
 }
