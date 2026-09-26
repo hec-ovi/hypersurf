@@ -26,7 +26,7 @@ In one line: **a calm, precise, premium in-game sci-fi interface.** It uses dark
    - No `border-radius` anywhere except rings and gauges, which are true circles.
 5. **Uppercase with letter-spacing for labels, sentence case for prose.** Any sentence a player reads is sentence case in Rajdhani 500.
 6. **Nothing covers the track during play** (see §9.1), and **nothing ever covers the YouTube player** (§8.3).
-7. **Calm by default.** Menu motion is slow ambient drift. The game never pulses to the beat, never wipes the screen with light, and has no gradient sweeps. The in-play HUD animates only in response to game events.
+7. **Calm by default, alive on events.** Menu motion is slow ambient drift. The game never pulses to the beat and never wipes the screen with light. The in-play HUD animates only in response to game events, and those events land with punch (§5.1).
 
 ---
 
@@ -285,10 +285,36 @@ Sizes: 76px (results, dock), 64px (HUD match ring), 58px (phone results), 46px (
 | Loading "now" stage diamond | opacity 1→.35→1 every 1s |
 | Results count-up | raw 600ms, each bonus row 300ms (150ms apart), final 700ms, easeOutCubic; then the badge fades in with scale .96→1 over 200ms |
 
-In-play HUD animations are in §9.3.
+In-play HUD animations are in §9.3. Text effects and UI particles are in §5.1.
 
 - Animate **only `transform` and `opacity`** during play. Never animate `box-shadow`, `filter`, width, height or `clip-path` there.
 - There is no screen-wide light wipe, no beat pulse on menus, no brightness flash on screen changes, and no parallax on the pointer.
+
+### 5.1 Text effects and UI particles
+
+The owner asked for the interface to feel alive ("improve UI effects like text, etc, give it particles maybe"). These effects are the only motion added on top of the rules above, and every one is off or reduced under calm visuals and `prefers-reduced-motion`.
+
+**Text effects:**
+
+| Effect | Where | How |
+|---|---|---|
+| **Decode reveal** | Screen titles, the mode name, PAUSED, the results title | Characters resolve left to right over 420 ms; unresolved ones cycle through `▮▯◆◇01/\<>` glyphs in `--cyan` at 70%. Letter widths are reserved first so nothing reflows. Runs once each time the text is shown. |
+| **Title glow and light sweep** | The HYPERSURF wordmark | The static glow of §6.2, plus a narrow white band that crosses the letters once every 9 s over 1.4 s (a second `background-clip: text` layer, so only the letters light up). |
+| **Count-up** | HUD score, results score rows, final score, pause stats | easeOutCubic between the old and new value, tabular numerals, one text write per frame only while counting. |
+| **Callout punch** | Event feed chips (MATCH, OVERFILL, POWER, WIPED) and the ×2 chip | In at `scale(1.18) → 1` and opacity 0→1 over 200 ms `--ease-back`, hold, then fade over 300 ms. Transform and opacity only. |
+
+**UI particles** share **one 2D canvas** (`#fx`) over the interface, with `pointer-events: none`. The game's 3D scene keeps its own effects.
+
+- **Pool:** at most 480 particles in preallocated typed arrays (position, velocity, life, size, colour index). Spawning reuses the oldest slot when full. The frame loop allocates nothing.
+- **Loop:** the canvas draws only while particles are alive, then clears once and stops. Device pixel ratio is capped at 1.5.
+- **Sources:**
+  - **Button activation:** 18 sparks from the pressed control, cyan (gold from the focused control), 450 ms.
+  - **Cash-in:** 10 sparks per collected tile, rising from the grid housing, in the tile colours.
+  - **Callouts:** 14 sparks from the chip's left edge in the chip's kind colour.
+  - **Score jump:** a faint trail of 6 motes drifting up and left from the score number when it rises by 1,000 or more.
+  - **Selection swap:** 40 sparks from the pedestal on a mode or vehicle change.
+- **Menu backdrop:** the particle-wave terrain and stars of §6.1 are drawn on their own canvas (`#sky`) at 30 fps.
+- **Calm visuals and reduced motion:** no bursts, trails or sweeps; the terrain is drawn once.
 
 ---
 
@@ -369,36 +395,38 @@ Other elements:
 - **Drag-over:** the reticles move 6px outward (transform, 160ms), the border turns solid `--cyan-mid`, and the fill brightens to `rgba(63,224,208,.06)`.
 - **Actions:** BACK at the bottom. Esc also goes back.
 
-### 7.3 Mode select
+### 7.3 Mode select (a 3D selection stage)
 
-- **Header:** `SELECT MODE`, subtitle `SAME TRACK · DIFFERENT RULES`.
-- **Cards:** three cards in a row, each up to 340px wide with a 24px gap, centred at about 40% of the height.
-- **Card construction:**
-  - A chamfered polygon with a 22px cut on the top-left and bottom-right corners.
-  - The outline layer is `linear-gradient(160deg, var(--o), rgba(63,224,208,.08) 70%)`, with a fill of `rgba(16,40,44,.96) → rgba(8,20,23,.96)`.
-- **Card content:**
-  - A 54px **diamond glyph** holding a 24px icon.
-  - The mode name in Oxanium 700, 28px, .12em.
-  - A two-line description in `body`.
-  - A hairline table of **exact** stats taken from the code, so every number is true (`rules.js` `RULES` and `songmap.js` mode parameters):
+Mode (and later vehicle) choice is a dedicated, interactive selection screen, not a row of cards. Both are built from one reusable component, `src/ui/stage.js`, so the vehicle screen reuses it with the real ship models.
+
+- **The object.** The current choice is a large 3D object turning slowly (one turn per 24 s) on a lit pedestal, drawn live by the game's own renderer (no second WebGL context), with bloom. For modes each has a crafted emblem:
+  - **MONO:** a single glowing block hovering over a 3×7 grid of dark tiles with cyan edges.
+  - **NINJA:** a four-spike shuriken with a bright hub, spinning on its own axis as well.
+  - **CASUAL:** a soft, wide ring with two thin shoulder lanes beside it.
+- **The pedestal:** a dark disc with two thin cyan rings, a dotted ring turning slowly, a soft light pool under the object and a few particles rising through it. The floor is a faint point field in the menu's terrain style.
+- **Interaction:**
+  - Drag (mouse or touch) rotates the object. On release it keeps the fling's momentum and eases back to the slow spin.
+  - ‹ and › arrows either side of the object, ←/→ (keys, d-pad, stick, LB/RB) and a click on an icon switch the choice. The swap slides the old object out and the new one in over 420 ms (scale and turn), with a particle burst from the pedestal.
+- **Screen layout at 1920:**
+  - Header top centre: `SELECT MODE`, subtitle `SAME TRACK · DIFFERENT RULES`.
+  - The object in the middle 50% of the width.
+  - Left column (from the gutter, vertically centred): an `eyebrow` index `02 / 03`, the **name** in Oxanium 800 at `title-xl` size with the decode reveal (§5.1), a one-line description in `body`, then hairline rows with the exact numbers from the code: MATCH TIMER, HAZARDS, BONUS (lime) and BEST.
+  - Right column: **three ring gauges** (76px) stacked with hairlines between them: **SPEED** (`×1.26`, the SongMap speed factor, ring = factor / 1.26), **DENSITY** (`7.8/s`, the block cap, ring = cap / 7.8) and **DIFFICULTY** (`3/3`). The rings animate to their new values over 400 ms on a swap.
+  - Bottom centre: a row of **icon buttons**, one per option, 56px diamonds with the option's custom SVG glyph (24px grid, 1.5px stroke). The **selected** option's icon is filled gold; the others are cyan outlines. Under the row, BACK and **CONFIRM**.
+- **Focus:** CONFIRM has default focus and is the one gold control. ←/→ switch the option from anywhere on the screen, Enter confirms, Esc goes back without changing the mode.
+- **Cost:** the stage renders only while the screen is open. It pauses when the screen closes or the tab is hidden, and it draws at most 60 fps with half-resolution bloom. Under calm visuals or reduced motion the object stands still (drag still works) and swaps are a 120 ms cross-fade without the burst.
+- **Without a 3D view** (no WebGPU or WebGL2), the screen shows the large icon in place of the object and works the same.
 
 | | Casual | Mono | Ninja |
 |---|---|---|---|
 | SPEED | ×0.8 | ×1.0 | ×1.26 |
-| BLOCKS | up to 2.3/s | up to 5.2/s | up to 7.8/s |
+| DENSITY | up to 2.3/s | up to 5.2/s | up to 7.8/s |
+| DIFFICULTY | 1/3 | 2/3 | 3/3 |
 | MATCH TIMER | 1.75 s | 1.5 s | 1.5 s |
 | HAZARDS | greys erase one | greys erase one | spikes erase all |
 | SHOULDERS | safe | — | — |
-| BONUS (lime line) | Clean finish +10% | Clean finish +10% | Stealth +25% |
+| BONUS (lime) | Clean finish +10% | Clean finish +10% | Stealth +25% |
 | BEST | local best for this song and mode, or `—` | | |
-
-  Each numeric row also gets a small 5-pip meter (slanted 12×7px pips, skewX(-24deg)) next to the number, as a glanceable scale.
-
-- **Selected versus focused:** these are different states.
-  - The **selected** mode has a **cyan** `◆ SELECTED` chip top-right and a full `--cyan` outline.
-  - The **focused** card is gold, with its pips in gold.
-  - Enter or click selects. A card can be focused and not selected.
-- **Actions:** BACK and SELECT with chevrons, centred under the cards. Esc goes back.
 
 ### 7.4 Settings
 
@@ -413,6 +441,7 @@ Other elements:
     - **HIT SOUNDS:** ‹ ON / OFF ›.
   - **VISUALS:** subtitle `COMFORT AND PERFORMANCE`.
     - **CALM VISUALS:** ‹ OFF / ON ›. The description reads "No beat pulses, softer flashes, no lens effects".
+    - **VIDEO:** ‹ MINI / HIDDEN ›, the YouTube mini player (§8.3). Hotkey V.
     - **QUALITY:** ‹ HIGH / MEDIUM / LOW ›.
   - **ABOUT:** hairline rows, each with a right chevron:
     - `Inspired by Audiosurf 2 (Dylan Fitterer) · not affiliated`
@@ -470,6 +499,7 @@ Other elements:
   - A stats row of three items: `SCORE 48,210`, `TIME 1:24 / 2:31` and `BLOCKS 131 / 240`. Labels are `micro` and values are `num-m`, with the total in `--text-3`.
   - Under the stats, the **song's intensity profile** (§9.2) at 520×40px, with the played part lit and the playhead diamond.
 - **Right column:** the chamfered stack: **RESUME** (default focus), RESTART, SETTINGS, then **QUIT TO MENU** in the quit slot.
+- **Video runs** add three hairline selector rows under the profile: VIDEO ‹ MINI ›, BLOCKS PER BEAT ‹ 1 › and CAPTURE DELAY ‹ +60 MS ›.
 - **Bottom-left:** key hints `ESC RESUME · R RESTART`.
 
 ### 7.7 Results
@@ -527,9 +557,8 @@ The phone sheet above shows the mockup's HUD. On the phone the HUD follows §9 i
   - The ring button is 54px at top-right. DEMO BEST shows as an 11px line under the ring.
 - **Audio file:** a full-width panel with 16px margins. The drop zone shrinks to 28px padding and the drop text reads `TAP TO CHOOSE A SONG`.
 - **Mode select:**
-  - The cards stack vertically. Each card uses a two-column grid: the glyph spans two rows, then name and description.
-  - The stat table becomes two columns of `micro` rows.
-  - **BACK / SELECT sit in a sticky bottom bar** (`position: sticky; bottom: 0`) with a fade from `--bg-1`, so they never scroll out of view.
+  - The object fills the upper half, the name and description sit under it, and the three gauges go in a row at 58px.
+  - The hairline stat rows are hidden; the icon row and **BACK / CONFIRM** sit in a bottom bar with a fade from `--bg-1`, so they never scroll out of view.
 - **Settings:**
   - The panel is `calc(100% - 32px)`.
   - Tabs are 13px, 22px apart.
@@ -552,57 +581,44 @@ The phone sheet above shows the mockup's HUD. On the phone the HUD follows §9 i
 
 ### 8.3 Video (YouTube) layout
 
-![Video screen with the docked player](art/ui-youtube.jpg)
+![Earlier docked-player design, replaced by the mini player below](art/ui-youtube.jpg)
 
-The legal constraints in research §5 and spec decision 2 are layout rules:
+The docked sidebar in the image above is **replaced**. The owner played a real video with it and asked for the permanent sidebar to go, or at least be optional. The rules now are:
 
-- The player sits in **its own docked column**, never under the canvas, the HUD or a toast.
-- It is **at least 480×270** and 16:9.
-- It is never shrunk, hidden or overlaid.
+- The player is never covered: nothing (canvas, HUD, toast, panel) is ever drawn over it.
+- While it is shown it is at least **356×200** and 16:9, which meets YouTube's 200×200 minimum for embedded players.
+- The player can be hidden by the player's own choice (VIDEO: HIDDEN below). The owner accepts that this choice belongs to the user.
+- The game is controlled only through the documented IFrame API, as before.
 
-**Desktop grid:** `grid-template-columns: minmax(0, 1fr) max(530px, 34vw)`.
+**Setup screen (before Start).** A normal full-screen menu screen over the menu backdrop, in the style of §7.2, not a sidebar:
 
-- At 1920 the dock is 653px wide, so the player is 609×343.
-- The **game canvas is resized to the left column only.** The HUD and toasts live inside that column.
+- A 680px panel titled `VIDEO`, subtitle `PLAY ALONG WITH A YOUTUBE VIDEO · LIVE LISTEN`.
+- A `VIDEO LINK` field: an underline input with a link glyph and Oxanium 19px text. Status under it: `◆ VIDEO FOUND` in lime once the player is ready, `LOADING VIDEO` in `--text-2`, or an error in `--red`.
+- **BLOCKS PER BEAT** as an arrow selector `‹ 1 ›` (½ / 1 / 2).
+- One line explaining the share prompt: "Start asks to share this tab. Keep “Also share tab audio” on: the game listens to the video's sound to find the beat. Nothing is recorded, stored or sent."
+- The legal line in `micro`: `Video plays in YouTube's own player · YouTube Terms · Google Privacy Policy`, then the user-responsibility sentence.
+- Actions: BACK and **START** (default focus once the video is ready; before that the link field has focus).
+- The mini player (below) already shows the found video in its corner on this screen, so the player sees what they picked.
 
-**Dock (right)**, background `linear-gradient(180deg, #0b1a1d, #081315)`, with a 1px `--line-2` rule on its left, padded 64px 22px 28px:
+**During play.** The game canvas is full screen and the player becomes a **mini player**:
 
-- **Header row:** `PLAYER` (`eyebrow`), and on the right `DOCKED · ALWAYS VISIBLE` in `micro` `--text-3`.
-- **The real IFrame player:** `width: 100%; min-width: 480px; aspect-ratio: 16/9`, with a 1px `--line-2` frame *outside* the iframe box, never on top of it. The mockup's purple and orange placeholder is only a stand-in.
-- **Readouts:** three ring gauges between hairlines: **TEMPO** (BPM), **LOCK** (confidence %) and **OFFSET** (ms).
-- **Beat phase:** a row of 8 diamonds (9px). Solid cyan means a confirmed beat, a dashed outline means a predicted ghost, and the next beat is the brightest. A ghost turns solid when it is confirmed (research §2.2).
-- **Hairline rows:** `CAPTURE`, with values WAITING FOR START / LISTENING (lime chip) / LOCKED (cyan) / STOPPED; then `MODE`; then `LATENCY ‹ +40 MS ›` as a selector; then `LOCAL BEST`.
-- **Actions**, once listening: PAUSE and STOP.
-- **Footer** in `micro`: `Video plays in YouTube's own player · YouTube Terms · Google Privacy Policy`, with links. Below that, the user-responsibility sentence.
+- It floats in a corner, default **bottom-right**, at 356×200 with a 16px (phone) to `--gutter` margin.
+- Its frame is a 1px `--line-2` hairline **outside** the iframe box, with 10px cyan corner brackets, and a 22px strip above it holding a drag grip, `VIDEO` in `micro` and a hide button. Nothing is drawn on the iframe itself.
+- It can be **dragged** to any corner by its strip (pointer and touch). On release it snaps to the nearest corner with a 220ms ease. The corner is remembered in this browser.
+- HUD clusters in the corner it occupies move out of its way (the event feed moves above it; the score or grid move to the other side when the player sits in their corner).
 
-**Left column, before Start:**
+**VIDEO: MINI / HIDDEN.** A setting (Settings › VISUALS › VIDEO, the pause screen of a video run, and the hotkey **V**). Default is MINI.
 
-- The game view shows the idle track, blurred as in the mockup.
-- A 620px panel titled `VIDEO`, with the subtitle `PLAY ALONG WITH A YOUTUBE VIDEO · LIVE LISTEN`.
-- A `VIDEO LINK` field: an underline input, a link glyph, and Oxanium 19px text. Status below it: `◆ VIDEO FOUND · 3:42` in lime, or an error in `--red`.
-- Three numbered steps:
-  1. Press Start. Your browser asks to share this tab.
-  2. Keep **Also share tab audio** ticked so the game can hear the video.
-  3. The track builds ahead of you as the song plays. Nothing is recorded.
-- Actions: BACK, and **START** (default focus once a valid ID is found; before that, focus is on the input).
+- HIDDEN collapses the player exactly as the owner's own music player does: the host box goes to `width: 1px; height: 1px; clip: rect(0 0 0 0); opacity: 0; pointer-events: none`. It is **never** `display: none` and never removed, so playback and the IFrame API carry on.
+- Switching shows an info toast (`VIDEO HIDDEN · PRESS V TO SHOW`).
 
-**Left column, after Start:** the panel fades out and the live HUD (§9) takes the column.
+**Live readouts** are a small HUD chip under the score, not a panel: `128 BPM · LOCK 82% · +60 MS`, with a 7px diamond that is lime while listening and locked, cyan while listening and not yet locked. Before audio arrives the score area shows the quiet **WAITING FOR AUDIO** state: a `micro` label and a 7px diamond that fades at 1 Hz, with no big `0`. The progress becomes `elapsed · LIVE` with a rolling profile of the **past** 30 s.
 
-- Before audio arrives, the score area shows a quiet **WAITING FOR AUDIO** state: a `micro` label and a 7px diamond that fades at 1 Hz. There is no big `0`.
-- The progress becomes `elapsed · LIVE`, with a rolling profile of the **past** 30 s. The future is unknown.
-
-**Narrow and unsupported cases:**
-
-- **980–760px:** the dock goes on top at full width, with the player at `min-width: 480px; max-width: 640px`, and the game view below it.
-- **Phones, Safari, Firefox and any browser without tab-audio capture** (feature-detect; do not sniff the user agent):
-  - Hide the dock and START.
-  - The panel shows an **INFORMATION** note, for example: "Live listen needs tab audio capture, which this browser does not offer. Use Chrome or Edge on a computer, or play a file or the demo here."
-  - Actions: BACK, **PLAY A FILE** (default focus), and PLAY DEMO.
-  - The player is never shrunk to fit.
+**Unsupported browsers** (phones, Safari, Firefox, anything without tab-audio capture; feature-detect, do not sniff the user agent): the setup panel hides START and the mini player, and shows an INFORMATION note, for example: "Live listen needs tab audio capture, which this browser does not offer. Use Chrome or Edge on a computer, or play a file or the demo here." Actions: BACK, **PLAY A FILE** (default focus) and PLAY DEMO.
 
 ### 8.4 Toasts (outside play)
 
-- **Position:** top-centre of the current content area. On the video screen that is the **left column**, so toasts never touch the dock. Width `min(560px, 100% - 32px)`, stacking with a 10px gap.
+- **Position:** top-centre of the screen, never over the mini player. Width `min(560px, 100% - 32px)`, stacking with a 10px gap.
 - **Construction:**
   - Background `rgba(10,22,24,.94)`, a 1px border in `--line-2` (tinted with the kind colour at .45), and `box-shadow: 0 10px 30px rgba(0,0,0,.45)`.
   - A **3px accent edge** on the left in the kind colour, with an 8px glow.
@@ -797,9 +813,9 @@ All of these use `transform` and `opacity` only. They reuse the existing `hud.js
 |---|---|
 | Menu | PLAY DEMO |
 | File | BROWSE FILES |
-| Mode | the selected card |
+| Mode | CONFIRM |
 | Settings | the first row |
-| Video | the link field, or START once an ID is found |
+| Video | the link field, or START once the video is ready |
 | Video fallback | PLAY A FILE |
 | Pause | RESUME |
 | Results | PLAY AGAIN |
@@ -837,13 +853,15 @@ These cover implementation constraints only; the look is defined above.
 - **Possible new modules:**
   - `src/ui/focus.js` for navigation, with pure logic that can be tested.
   - `src/ui/terrain.js` for the menu 2D canvas.
+  - `src/ui/particles.js` for the pooled UI particles on `#fx`, and `src/ui/text.js` for the decode reveal and count-ups.
+  - `src/ui/stage.js`, the reusable 3D selection stage (§7.3), rendered by the game's renderer with its own small scene.
   - `src/ui/profile.js`, which renders the intensity profile once to a canvas from the SongMap.
   - `src/ui/keepout.js`, which projects the track into a screen polygon (pure given camera matrices, so it can be tested).
 - **During play:**
   - No `backdrop-filter`, and no animated `box-shadow` or `filter`.
   - At most one DOM write per value change.
   - No layout reads in the frame loop (use `offsetWidth` only in one-shot class restarts, as today).
-- **Menus:** do not add a WebGL context. The 2D terrain costs under 1ms per frame at 30 fps.
+- **Menus:** do not add a WebGL context. The 2D terrain costs under 1ms per frame at 30 fps. The selection stage borrows the game's renderer while its screen is open, since the game is not rendering then.
 - **Assets:** the only external assets are the two Google Fonts. Icons and the emblem are inline SVG. The screenshots in `docs/art/` are our own mockup captures. The owner's reference images are never added to the repo.
 
 ## 13. Changes from the mockup
@@ -854,9 +872,9 @@ These are the fixes and grafts the judges asked for.
 2. The menu sky is teal-charcoal with a navy tint only in the top third.
 3. The HUD follows the keep-out zone. The grid moves to the left edge at mid-height, in a housing without `backdrop-filter`. Empty cells are diamond dots and filled cells are chamfered tiles. Columns get lane rails, the FULL tag and the rail pulse, and lane diamonds sit under the grid. The match ring shows the block count and pending points. The progress is the song's intensity profile. BEST progress sits under the score, and a pause ring is added. The centre toast becomes the right-edge event feed.
 4. Gold is focus only. The ×2 chip, NEW LOCAL BEST and the loading tip move to lime or cyan, and section marks move to `--text-2`.
-5. Mode cards separate SELECTED (cyan) from focused (gold), show exact stats, the bonus line and per-mode best, and on the phone keep BACK / SELECT in a sticky bar.
+5. The mode cards become a 3D selection stage (§7.3) with exact stats, ring gauges, an icon row and the per-mode best.
 6. Settings gain the beat check lane, AUDIO / VISUALS / ABOUT tabs, and an INFORMATION block that always explains the focused row.
 7. Loading gains real stage names, a stats strip and ESC CANCEL. Pause gains the intensity profile.
-8. The YouTube dock gains its live-listening contents: rings, beat-phase diamonds, latency, PAUSE and STOP. The game side shows a quiet WAITING FOR AUDIO state. Legal links go in the dock footer.
+8. The YouTube dock is replaced by a full-screen setup screen and a floating mini player that can be hidden (§8.3). The live readouts become a HUD chip, and the game shows a quiet WAITING FOR AUDIO state until audio arrives.
 9. Toasts have three kinds (info, warn, error), a focused recovery action, a lifetime hairline and ARIA roles.
 10. Focus uses real `:focus-visible` rules with cues that are not colour. `--text-3` is raised to #7fa3a0, and the minimum text size is 11px.
