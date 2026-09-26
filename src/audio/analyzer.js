@@ -12,9 +12,9 @@ export class Analyzer {
     this.worker.onerror = (e) => this._failAll(new Error(e.message || 'analysis worker failed'));
   }
 
-  /** Analyse decoded channels. Resolves with { songMap, timings }. */
-  analyze(channels, sampleRate, { mode = 'mono', seed, onProgress } = {}) {
-    return this._request({ type: 'analyze', channels, sampleRate, mode, seed }, channels.map((c) => c.buffer), onProgress);
+  /** Analyse decoded channels (level: a special level's preset on top). Resolves with { songMap, timings }. */
+  analyze(channels, sampleRate, { mode = 'mono', seed, level = null, onProgress } = {}) {
+    return this._request({ type: 'analyze', channels, sampleRate, mode, seed, level }, channels.map((c) => c.buffer), onProgress);
   }
 
   /** Synthesise and analyse the demo. Resolves with { songMap, channels, sampleRate, truth, timings }. */
@@ -22,9 +22,9 @@ export class Analyzer {
     return this._request({ type: 'demo', sampleRate, mode }, [], onProgress);
   }
 
-  /** Rebuild the last analysed song for another mode or seed. */
-  build({ mode = 'mono', seed }) {
-    return this._request({ type: 'build', mode, seed }, []);
+  /** Rebuild the last analysed song for another mode, seed or level. */
+  build({ mode = 'mono', seed, level = null }) {
+    return this._request({ type: 'build', mode, seed, level }, []);
   }
 
   terminate() {

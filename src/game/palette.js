@@ -86,6 +86,24 @@ export function gradientAt(t, out = [0, 0, 0], lut = DEFAULT_LUT) {
   return out;
 }
 
+/** The rainbow a special level paints its track with, red round to red again. */
+export const RAINBOW_STOPS = Object.freeze([
+  [0, '#FF1F4B'],
+  [1 / 6, '#FF8A1A'],
+  [2 / 6, '#FFD23A'],
+  [3 / 6, '#19E0A0'],
+  [4 / 6, '#0FA3FF'],
+  [5 / 6, '#8A3CFF'],
+  [1, '#FF1F4B'],
+]);
+
+const RAINBOW_LUT = gradientLut(RAINBOW_STOPS);
+
+/** Rainbow colour at u, wrapping every 1 (linear RGB into `out`). */
+export function rainbowAt(u, out = [0, 0, 0]) {
+  return gradientAt(u - Math.floor(u), out, RAINBOW_LUT);
+}
+
 /** OKLab chroma; album-art palettes below 0.05 read as grey and are rejected. */
 export function chroma(hex) {
   const [, a, b] = linearToOklab(hexToLinear(hex));

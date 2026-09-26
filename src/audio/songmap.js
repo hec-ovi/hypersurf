@@ -11,13 +11,20 @@
 //            between whose bank follows intensity. At most one big moment
 //            (loop, twist or flip) per 8 s of gap, none in the first 10 s.
 //
-// Pure and deterministic: the same features, mode and seed always give the
-// same map (and the same hash). All randomness comes from a PRNG seeded by
-// the analysis ID.
+// A special level (levels.js) reads the same features through its preset:
+// its own speed range swinging with block density, a higher block cap from
+// more sensitive onsets, a big moment every few seconds, a rainbow track and
+// a start where its music starts.
+//
+// Pure and deterministic: the same features, mode, seed and level always
+// give the same map (and the same hash). All randomness comes from a PRNG
+// seeded by the analysis ID.
 
 import { mulberry32, seedFromString, Hasher } from './random.js';
 import { sampleSeries } from './dsp.js';
-import { gradientAt } from '../game/palette.js';
+import { detectOnsets } from './onsets.js';
+import { levelPreset } from './levels.js';
+import { gradientAt, rainbowAt } from '../game/palette.js';
 
 export const SONGMAP_VERSION = 2;
 export const NODE_RATE = 30;
@@ -131,8 +138,8 @@ export function gridTime(grid, pos) {
 
 // --- blocks ------------------------------------------------------------------
 
-function candidatesFrom(features, grid) {
-  const { times, strength, band } = features.onsets;
+function candidatesFrom(onsets, grid) {
+  const { times, strength, band } = onsets;
   const out = [];
   for (let i = 0; i < times.length; i++) {
     // Quantise first so tiny cross-engine differences do not move layout decisions.
@@ -164,7 +171,7 @@ function candidatesFrom(features, grid) {
  * drop itself: builds get loud and busy before it, but the kick and bass
  * come back exactly on it.
  */
-export function findPowerBlocks(features, candidates, grid, count) {
+export function findPowerBlocks(features, candidates, grid, count, notBefore = 0) {
   const I = features.intensity.raw, rate = features.intensity.rate, n = I.length;
   const W = Math.round(LAYOUT.noveltyWindow * rate);
   const pI = new Float64Array(n + 1);
@@ -205,7 +212,7 @@ export function findPowerBlocks(features, candidates, grid, count) {
   const peaks = [];
   for (let k = 1; k + 1 < n; k++) {
     const t = k / rate;
-    if (t < LAYOUT.pbNotBefore || t > duration - 5) continue;
+    if (t < Math.max(LAYOUT.pbNotBefore, notBefore) || t > duration - 5) continue;
     if (nov[k] >= LAYOUT.noveltyMin && nov[k] >= nov[k - 1] && nov[k] > nov[k + 1]) peaks.push({ k, v: nov[k] });
   }
   peaks.sort((a, b) => b.v - a.v || a.k - b.k);
@@ -544,10 +551,22 @@ const overlaps = (a0, a1, list, gap) => list.some((o) => a0 < o.end + gap && a1 
  * at most sweepBars long on bar lines, get a sweeping curve when their
  * mean intensity reaches sweepIntensity.
  *
+ * A level's `opts` override the gap, start, novelty and flip settings, and
+ * its section changes take the shapes of its `cycle` (a fall still makes
+ * a flip), and the cycle then fills every stretch still free: walking
+ * forward, the next shape of the cycle that fits starting within `window`
+ * seconds goes on the best-scoring bar line there (4-bar phrase lines
+ * count a little extra).
+ *
  * @param loops  the power-block loops ({ start, end })
+ * @param opts   a level's feature settings ({ gap, notBefore (song time), novelty, flipBars, maxFlips, window, cycle })
  * @returns { features: [{ type, time, start, end, dir, inEnd?, outStart?, score }], sweeps: [{ start, end, yaw, dir }] }
  */
-export function planFeatures(features, grid, downbeatPhase, loops) {
+export function planFeatures(features, grid, downbeatPhase, loops, opts = null) {
+  const F = {
+    gap: LAYOUT.featureGap, notBefore: LAYOUT.featureNotBefore, novelty: LAYOUT.featureNovelty,
+    flipBars: LAYOUT.flipBars, maxFlips: LAYOUT.maxFlips, window: 0, cycle: null, ...opts,
+  };
   const duration = features.duration;
   const bars = barTimes(grid, downbeatPhase, duration);
   const nb = bars.length;
@@ -590,34 +609,80 @@ export function planFeatures(features, grid, downbeatPhase, loops) {
   for (let j = 1; j < nb; j++) score[j] = q((med > 1e-9 ? dist[j] / med : 0) + 4 * Math.abs(dI[j]), 1e-4);
   const peaks = [];
   for (let j = 1; j < nb; j++) {
-    if (score[j] < LAYOUT.featureNovelty) continue;
+    if (score[j] < F.novelty) continue;
     if ((j > 1 && score[j - 1] > score[j]) || (j + 1 < nb && score[j + 1] >= score[j])) continue;
     peaks.push(j);
   }
   peaks.sort((a, b) => score[b] - score[a] || a - b);
 
   const taken = loops.map((l) => ({ start: l.start, end: l.end }));
-  const fits = (s, e) => s >= LAYOUT.featureNotBefore && e <= duration - 3 && !overlaps(s, e, taken, LAYOUT.featureGap);
-  let flips = 0;
-  for (const j of peaks) {
+  const fits = (f) => !!f && f.start >= F.notBefore && f.end <= duration - 3 && !overlaps(f.start, f.end, taken, F.gap);
+  /** The shape of `type` on bar line j (null past the song's bars). */
+  const shapeOn = (type, j) => {
     const t = bars[j];
-    let f = null;
-    if (dI[j] <= -LAYOUT.flipFall && flips < LAYOUT.maxFlips && j + LAYOUT.flipBars < nb) {
+    if (type === LOOP.FLIP) {
+      if (j + F.flipBars >= nb) return null;
       const half = flipHalf(barLen);
-      const start = t - half / 2, end = bars[j + LAYOUT.flipBars] + half / 2;
-      if (fits(start, end)) {
-        f = { type: LOOP.FLIP, time: t, start, end, inEnd: start + half, outStart: end - half };
-        flips++;
+      const start = t - half / 2, end = bars[j + F.flipBars] + half / 2;
+      return { type, time: t, start, end, inEnd: start + half, outStart: end - half };
+    }
+    const len = type === LOOP.TWIST ? twistLength(barLen) : LAYOUT.loopLength;
+    return { type, time: t, start: t - len / 2, end: t + len / 2 };
+  };
+  const cycleType = (k) => LOOP[F.cycle[k % F.cycle.length].toUpperCase()];
+  let flips = 0, k = 0;
+  for (const j of peaks) {
+    let f = null;
+    if (dI[j] <= -LAYOUT.flipFall && flips < F.maxFlips) {
+      f = shapeOn(LOOP.FLIP, j);
+      if (fits(f)) flips++;
+      else f = null;
+    }
+    if (!f && F.cycle) {
+      // A level: the cycle's next shape that fits here, or none.
+      for (let a = 0; a < F.cycle.length && !f; a++) {
+        f = shapeOn(cycleType(k + a), j);
+        if (fits(f)) k += a + 1;
+        else f = null;
       }
+      if (!f) continue;
     }
     if (!f) {
-      const len = twistLength(barLen);
-      if (fits(t - len / 2, t + len / 2)) f = { type: LOOP.TWIST, time: t, start: t - len / 2, end: t + len / 2 };
+      f = shapeOn(LOOP.TWIST, j);
+      if (!fits(f)) continue;
     }
-    if (!f) continue;
     f.score = score[j];
     out.features.push(f);
     taken.push(f);
+  }
+  if (F.cycle && F.cycle.length) {
+    const phrase = grid.offset + downbeatPhase;
+    const weight = (j) => score[j] + (Math.round((gridPosition(grid, bars[j]) - phrase) / 4) % 4 === 0 ? 0.5 : 0);
+    /** The best-weighted shape of `type` that fits, starting in [from, to]. */
+    const pick = (type, from, to) => {
+      let best = null, bestW = -Infinity;
+      for (let j = 1; j < nb; j++) {
+        const f = shapeOn(type, j);
+        if (!f || f.start < from) continue;
+        if (f.start > to) break;
+        if (!fits(f) || weight(j) <= bestW) continue;
+        f.score = score[j];
+        best = f;
+        bestW = weight(j);
+      }
+      return best;
+    };
+    let cursor = F.notBefore;
+    while (cursor < duration) {
+      // The cycle's next shape, or the first after it that fits here.
+      let f = null, a = 0;
+      for (; a < F.cycle.length && !f; a++) f = pick(cycleType(k + a), cursor, cursor + F.window);
+      if (!f) { cursor += barLen / 2; continue; }
+      out.features.push(f);
+      taken.push(f);
+      cursor = f.end + F.gap;
+      k += a;
+    }
   }
   out.features.sort((a, b) => a.time - b.time);
   out.features.forEach((f, i) => { f.dir = i % 2 === 0 ? 1 : -1; });
@@ -625,7 +690,7 @@ export function planFeatures(features, grid, downbeatPhase, loops) {
   // Sweeps in the stretches between big moments.
   const busy = taken.slice().sort((a, b) => a.start - b.start);
   const clear = LAYOUT.sweepClear;
-  let from = LAYOUT.featureNotBefore, dir = 1;
+  let from = F.notBefore, dir = 1;
   for (let i = 0; i <= busy.length; i++) {
     const to = i < busy.length ? busy[i].start - clear : duration - 2;
     let a = from;
@@ -653,6 +718,54 @@ export function planFeatures(features, grid, downbeatPhase, loops) {
 // --- nodes -------------------------------------------------------------------
 
 /**
+ * A level's speed drive (0..1) per node: the block density in a window of
+ * S.window seconds, ranked against the density over the whole song (so a
+ * song that never changes loudness still rushes and slows), mixed with
+ * intensity, smoothed both ways over S.smooth seconds and stretched so
+ * the song's own range spans 0..1 (low before the music starts and after
+ * it ends).
+ */
+export function speedDrive(times, I, rate, duration, start, S, count, t0 = -LEAD_IN, nodeRate = NODE_RATE) {
+  const dt = 1 / nodeRate, half = S.window / 2;
+  const dens = new Float64Array(count);
+  let a = 0, b = 0;
+  for (let k = 0; k < count; k++) {
+    const t = t0 + k * dt;
+    while (a < times.length && times[a] < t - half) a++;
+    while (b < times.length && times[b] <= t + half) b++;
+    dens[k] = b - a;
+  }
+  const inSong = (k) => { const t = t0 + k * dt; return t >= start && t <= duration; };
+  const sorted = [];
+  for (let k = 0; k < count; k++) if (inSong(k)) sorted.push(dens[k]);
+  sorted.sort((x, y) => x - y);
+  const m = sorted.length;
+  const bound = (v, upper) => {
+    let lo = 0, hi = m;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (upper ? sorted[mid] <= v : sorted[mid] < v) lo = mid + 1; else hi = mid; }
+    return lo;
+  };
+  const drive = new Float64Array(count);
+  for (let k = 0; k < count; k++) {
+    if (!inSong(k) || m < 2) continue;
+    const rank = (bound(dens[k], false) + bound(dens[k], true) - 1) / 2 / (m - 1);
+    const i = sampleSeries(I, rate, t0 + k * dt);
+    drive[k] = S.density * rank + (1 - S.density) * i;
+  }
+  const g = 1 - Math.exp(-dt / S.smooth);
+  for (let k = 1; k < count; k++) drive[k] += (drive[k - 1] - drive[k]) * (1 - g);
+  for (let k = count - 2; k >= 0; k--) drive[k] += (drive[k + 1] - drive[k]) * (1 - g);
+  // Stretched so the song's own 2nd..98th percentile spans the whole range.
+  const song = [];
+  for (let k = 0; k < count; k++) if (inSong(k)) song.push(drive[k]);
+  song.sort((x, y) => x - y);
+  const lo = song.length ? song[Math.floor(song.length * 0.02)] : 0, hi = song.length ? song[Math.floor(song.length * 0.98)] : 1;
+  const span = hi - lo > 1e-6 ? hi - lo : 1;
+  for (let k = 0; k < count; k++) drive[k] = Math.min(1, Math.max(0, q((drive[k] - lo) / span, 1e-6)));
+  return drive;
+}
+
+/**
  * @param shapes  loops and big features, sorted by start, never overlapping
  * @param sweeps  sweeping curves ({ start, end, yaw (degrees), dir })
  */
@@ -678,15 +791,19 @@ function buildNodes(features, blocks, shapes, sweeps, cfg, rand) {
     return Math.min(1, c / (4 * cfg.maxRate));
   };
 
-  // Speed, slope and heading (noise plus the sweeping curves).
+  // Speed, slope and heading (noise plus the sweeping curves). A level's
+  // drive (block density and intensity) sets its speed and slope instead.
+  const S = cfg.drive;
+  const drive = S ? speedDrive(times, I, rate, duration, cfg.start, S, count) : null;
   let p = 0, si = 0;
   for (let k = 0; k < count; k++) {
     const t = -LEAD_IN + k * dt;
     const i = sampleSeries(I, rate, Math.min(duration, Math.max(0, t)));
     intensity[k] = i;
-    speed[k] = cfg.speedMin + (cfg.speedMax - cfg.speedMin) * Math.pow(i, 1.3);
-    const target = i < 0.5 ? (LAYOUT.pitchUp * (0.5 - i)) / 0.5 : (-LAYOUT.pitchDown * (i - 0.5)) / 0.5;
-    const maxStep = LAYOUT.pitchRate * dt;
+    const d = drive ? drive[k] : i;
+    speed[k] = cfg.speedMin + (cfg.speedMax - cfg.speedMin) * Math.pow(d, drive ? S.curve : 1.3);
+    const target = d < 0.5 ? (LAYOUT.pitchUp * (0.5 - d)) / 0.5 : (-LAYOUT.pitchDown * (d - 0.5)) / 0.5;
+    const maxStep = (S ? S.pitchRate : LAYOUT.pitchRate) * dt;
     p += Math.max(-maxStep, Math.min(maxStep, target - p));
     pitch[k] = p * DEG;
     let noise = 0;
@@ -755,7 +872,8 @@ function buildNodes(features, blocks, shapes, sweeps, cfg, rand) {
       pos[k * 3 + c] = base[c];
       upBase[k * 3 + c] = cl * u[c] + sl * r[c];
     }
-    gradientAt(intensity[k], rgb);
+    if (cfg.palette === 'rainbow') rainbowAt(dist[k] / cfg.rainbowLength, rgb);
+    else gradientAt(intensity[k], rgb);
     color[k * 3] = rgb[0]; color[k * 3 + 1] = rgb[1]; color[k * 3 + 2] = rgb[2];
   }
   // Final positions, re-based so the node at song time 0 is the origin.
@@ -785,25 +903,47 @@ function buildNodes(features, blocks, shapes, sweeps, cfg, rand) {
 // --- assembly ----------------------------------------------------------------
 
 /**
+ * Where a level's music starts: the beat nearest the first moment the
+ * intensity reaches `level` (0 if it starts at once or never does).
+ */
+export function musicStart(features, grid, { level }) {
+  const I = features.intensity.raw, rate = features.intensity.rate;
+  let k = 0;
+  while (k < I.length && I[k] < level) k++;
+  if (k === 0 || k >= I.length) return 0;
+  return Math.max(0, q(gridTime(grid, Math.round(gridPosition(grid, k / rate))), 1e-4));
+}
+
+/**
  * Build the SongMap for a mode.
  * @param features  output of analyzeAudio
- * @param {{ mode?: 'mono'|'ninja'|'casual', seed?: string, maxRate?: number }} options
- *   seed: the analysis ID (file hash, 'yt:<id>' or 'demo'); maxRate overrides the mode's density cap.
+ * @param {{ mode?: 'mono'|'ninja'|'casual', seed?: string, maxRate?: number, level?: string }} options
+ *   seed: the analysis ID (file hash, 'yt:<id>' or 'demo'); maxRate overrides the mode's density cap;
+ *   level: a special level whose preset (levels.js) applies on top.
  */
-export function buildSongMap(features, { mode = 'mono', seed = 'demo', maxRate } = {}) {
+export function buildSongMap(features, { mode = 'mono', seed = 'demo', maxRate, level = null } = {}) {
   const base = MODES[mode];
   if (!base) throw new Error(`unknown mode ${mode}`);
-  const cfg = { ...base, maxRate: maxRate ?? base.maxRate };
-  const rand = mulberry32(seedFromString(`${seed}|${mode}`));
+  const P = level ? levelPreset(level) : null;
+  const cfg = { ...base, maxRate: maxRate ?? (P ? (P.maxRate * base.maxRate) / MODES.mono.maxRate : base.maxRate), start: 0 };
+  const rand = mulberry32(seedFromString(P ? `${seed}|${mode}|${level}` : `${seed}|${mode}`));
   const duration = features.duration;
   const { bpm, beats, downbeatPhase } = features.tempo;
   const grid = makeGrid(beats, bpm, duration);
   const scales = bandScales(features);
+  if (P) {
+    Object.assign(cfg, { speedMin: P.speed.min, speedMax: P.speed.max, drive: P.speed, palette: P.palette, rainbowLength: P.rainbowLength });
+    if (P.greyFraction !== undefined) cfg.greyFraction = P.greyFraction;
+    if (P.intro) cfg.start = musicStart(features, grid, P.intro);
+  }
+  const onsets = P && P.onsetDelta
+    ? detectOnsets({ envelope: features.envelope, bandFlux: features.bandFlux, frameRate: features.frameRate }, { delta: P.onsetDelta })
+    : features.onsets;
 
-  const candidates = candidatesFrom(features, grid);
+  const candidates = candidatesFrom(onsets, grid).filter((c) => c.t >= cfg.start - LAYOUT.mergeWindow);
   const minutes = duration / 60;
   const pbCount = Math.min(cfg.maxPowerBlocks, Math.floor(minutes) + cfg.extraPowerBlocks);
-  const power = findPowerBlocks(features, candidates, grid, pbCount);
+  const power = findPowerBlocks(features, candidates, grid, pbCount, cfg.start + (P ? P.features.notBefore : 0));
   const nearPower = (t) => power.some((pb) => Math.abs(pb.time - t) < LAYOUT.pbClear);
   const kept = capDensity(candidates.filter((c) => !nearPower(c.t)), power.map((pb) => pb.time), cfg.maxRate);
   let blocks = fillQuietGaps(kept, features, grid, downbeatPhase, scales);
@@ -827,7 +967,7 @@ export function buildSongMap(features, { mode = 'mono', seed = 'demo', maxRate }
     start: pb.time - LAYOUT.loopLength / 2,
     end: pb.time + LAYOUT.loopLength / 2,
   }));
-  const plan = planFeatures(features, grid, downbeatPhase, loops);
+  const plan = planFeatures(features, grid, downbeatPhase, loops, P ? { ...P.features, notBefore: cfg.start + P.features.notBefore } : null);
   const shapes = [...loops, ...plan.features].sort((a, b) => a.start - b.start);
   const nodes = buildNodes(features, blocks, shapes, plan.sweeps, cfg, rand);
 
@@ -850,6 +990,8 @@ export function buildSongMap(features, { mode = 'mono', seed = 'demo', maxRate }
   const map = {
     version: SONGMAP_VERSION,
     mode, seed, duration,
+    level: P ? level : null,
+    start: cfg.start, // song time a run begins playing (LEAD_IN before it)
     bpm: features.tempo.bpm,
     beats: Float64Array.from(features.tempo.beats),
     downbeatPhase,
@@ -861,7 +1003,7 @@ export function buildSongMap(features, { mode = 'mono', seed = 'demo', maxRate }
     skyline: { rate: features.frameRate, bands: features.skylineBands, data: features.skyline.slice() },
     skipIntroTo,
     stats: {
-      onsets: features.onsets.times.length,
+      onsets: onsets.times.length,
       blocks: n,
       colour: count(out.type, BLOCK.COLOUR),
       grey: count(out.type, BLOCK.GREY),
@@ -886,6 +1028,7 @@ function count(arr, v) {
 export function songMapHash(map) {
   const h = new Hasher();
   h.int(map.version).int(seedFromString(map.mode)).int(seedFromString(map.seed)).num(map.duration, 1e-3).num(map.bpm, 1e-3);
+  if (map.level) h.int(seedFromString(map.level)).num(map.start, 1e-4);
   const b = map.blocks;
   h.array(b.time, 1e-4).array(b.lane, 1).array(b.type, 1).array(b.strength, 1e-3).array(b.band, 1).array(b.spanEnd, 1e-4).array(b.pbRank, 1);
   const nd = map.nodes;

@@ -4,10 +4,10 @@
 //
 // Requests                                         Replies (same id)
 //   { type: 'analyze', id, channels, sampleRate,     { type: 'progress', id, fraction, stage }
-//     mode, seed }                                   { type: 'result', id, songMap, timings }
+//     mode, seed, level? }                           { type: 'result', id, songMap, timings }
 //   { type: 'demo', id, sampleRate, mode }           { type: 'result', id, songMap, timings,
 //                                                        channels, truth }
-//   { type: 'build', id, mode, seed }                { type: 'result', id, songMap }
+//   { type: 'build', id, mode, seed, level? }        { type: 'result', id, songMap }
 //                                                    { type: 'error', id, message }
 
 import { analyzeAudio, transferables } from './analyze.js';
@@ -41,7 +41,7 @@ export function createAnalysisHandler() {
     try {
       if (type === 'analyze') {
         const f = analyze(id, msg.channels, msg.sampleRate, post);
-        sendMap(id, buildSongMap(f, { mode: msg.mode, seed: msg.seed }), { timings: f.timings }, post);
+        sendMap(id, buildSongMap(f, { mode: msg.mode, seed: msg.seed, level: msg.level || null }), { timings: f.timings }, post);
       } else if (type === 'demo') {
         post({ type: 'progress', id, fraction: 0, stage: 'synth' });
         const demo = generateDemoSong({ seed: DEMO_SEED, sampleRate: msg.sampleRate || 44100 });
@@ -51,7 +51,7 @@ export function createAnalysisHandler() {
         sendMap(id, buildSongMap(f, { mode: msg.mode, seed: 'demo' }), { timings: f.timings, channels: demo.channels, truth, sampleRate: demo.sampleRate }, post);
       } else if (type === 'build') {
         if (!features) throw new Error('nothing analysed yet');
-        sendMap(id, buildSongMap(features, { mode: msg.mode, seed: msg.seed }), {}, post);
+        sendMap(id, buildSongMap(features, { mode: msg.mode, seed: msg.seed, level: msg.level || null }), {}, post);
       } else {
         throw new Error(`unknown request ${type}`);
       }
