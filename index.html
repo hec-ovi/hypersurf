@@ -81,11 +81,12 @@
         <button class="cb" type="button" id="demo-btn" data-nav data-default style="--i:0"><span class="lbl">Play demo</span><span class="meta">2:31 · 128 BPM</span></button>
         <button class="cb" type="button" id="file-btn" data-nav style="--i:1"><span class="lbl">Play audio file</span><span class="meta">MP3 · WAV · OGG · FLAC</span></button>
         <button class="cb" type="button" id="video-btn" data-nav style="--i:2"><span class="lbl">Play a YouTube video</span><span class="meta">Live listen</span></button>
-        <button class="cb" type="button" id="mode-btn" data-nav data-step style="--i:3" aria-describedby="mode-now"><span class="lbl">Mode</span><span class="meta sel-inline"><span class="chev" data-icon="chevL"></span><b id="mode-now">Mono</b><span class="chev" data-icon="chevR"></span></span></button>
-        <button class="cb" type="button" id="vehicle-btn" data-nav data-step style="--i:4" aria-describedby="vehicle-now"><span class="lbl">Vehicle</span><span class="meta sel-inline"><span class="chev" data-icon="chevL"></span><b id="vehicle-now">Dart</b><span class="chev" data-icon="chevR"></span></span></button>
-        <button class="cb" type="button" id="settings-btn" data-nav style="--i:5"><span class="lbl">Settings</span></button>
+        <button class="cb" type="button" id="levels-btn" data-nav style="--i:3"><span class="lbl">Special levels</span><span class="meta">Demo · Nyan Cat</span></button>
+        <button class="cb" type="button" id="mode-btn" data-nav data-step style="--i:4" aria-describedby="mode-now"><span class="lbl">Mode</span><span class="meta sel-inline"><span class="chev" data-icon="chevL"></span><b id="mode-now">Mono</b><span class="chev" data-icon="chevR"></span></span></button>
+        <button class="cb" type="button" id="vehicle-btn" data-nav data-step style="--i:5" aria-describedby="vehicle-now"><span class="lbl">Vehicle</span><span class="meta sel-inline"><span class="chev" data-icon="chevL"></span><b id="vehicle-now">Dart</b><span class="chev" data-icon="chevR"></span></span></button>
+        <button class="cb" type="button" id="settings-btn" data-nav style="--i:6"><span class="lbl">Settings</span></button>
         <div class="quit-gap"></div>
-        <button class="cb" type="button" id="howto-btn" data-nav style="--i:6"><span class="lbl">How to play</span></button>
+        <button class="cb" type="button" id="howto-btn" data-nav style="--i:7"><span class="lbl">How to play</span></button>
       </div>
     </nav>
 
@@ -223,6 +224,65 @@
       <div class="actions">
         <button class="act" type="button" data-back data-nav><span data-icon="chevL"></span>Back</button>
         <button class="act" type="button" data-stage-confirm data-nav data-default>Confirm<span data-icon="chevR"></span></button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ special levels (3D stage) -->
+  <section id="levels" class="screen stage-screen" hidden aria-labelledby="levels-title">
+    <header class="head stage-head">
+      <h2 class="title" id="levels-title" data-decode>Special levels</h2>
+      <p class="sub">Hand-tuned rides · your mode's rules</p>
+    </header>
+    <div class="stage-area" data-stage-drag aria-hidden="true">
+      <span class="stage-fallback" data-stage-fallback></span>
+    </div>
+    <button class="stage-arrow prev" type="button" data-stage-prev aria-label="Previous level" data-icon="chevL"></button>
+    <button class="stage-arrow next" type="button" data-stage-next aria-label="Next level" data-icon="chevR"></button>
+    <div class="stage-info">
+      <p class="eyebrow cyan" data-stage-index>01 / 02</p>
+      <h3 class="stage-name" data-stage-name aria-live="polite">Hypersurf demo</h3>
+      <p class="stage-desc" data-stage-desc></p>
+      <ul class="rows stage-rows" data-stage-rows></ul>
+    </div>
+    <div class="stage-gauges" data-stage-gauges></div>
+    <div class="stage-foot">
+      <div class="stage-icons" role="radiogroup" aria-label="Levels" data-stage-icons></div>
+      <div class="actions">
+        <button class="act" type="button" data-back data-nav><span data-icon="chevL"></span>Back</button>
+        <button class="act" type="button" id="level-song" data-nav hidden>Song file</button>
+        <button class="act" type="button" data-stage-confirm data-nav data-default>Play<span data-icon="chevR"></span></button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ nyan cat song -->
+  <section id="nyan" class="screen center" hidden aria-labelledby="nyan-title">
+    <div class="panel dialog">
+      <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+      <header class="head">
+        <h2 class="title" id="nyan-title" data-decode>Nyan Cat</h2>
+        <p class="sub">Your own copy · stays on your device</p>
+      </header>
+      <p class="note">The song is not included with hypersurf. Pick your copy once: it is analysed on this device and kept only in this browser, so the level starts with one click next time. Nothing is uploaded.</p>
+      <p class="status" id="nyan-status" role="status" aria-live="polite"></p>
+      <div class="drop" id="nyan-drop">
+        <span class="reticle" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        <span class="drop-ico" aria-hidden="true">
+          <svg class="r" viewBox="0 0 84 84"><circle cx="42" cy="42" r="40" fill="none" stroke="currentColor" stroke-opacity=".5" stroke-width="1" stroke-dasharray="2 5"/><circle cx="42" cy="42" r="34" fill="none" stroke="currentColor" stroke-opacity=".3" stroke-width="1"/></svg>
+          <span data-icon="cat"></span>
+        </span>
+        <h3 class="drop-title"><span class="desk" id="nyan-drop-title">Drop your copy here</span><span class="touch">Choose your copy</span></h3>
+        <span class="or">or</span>
+        <button class="act" type="button" id="nyan-browse" data-nav data-default>Browse files</button>
+        <p class="formats">MP3 · WAV · OGG · FLAC · M4A</p>
+        <input id="nyan-input" type="file" accept="audio/*,.mp3,.wav,.ogg,.oga,.flac,.m4a,.aac,.opus,.webm" hidden>
+      </div>
+      <p class="presets"><span class="micro">No copy?</span><button class="chip" type="button" id="nyan-yt" data-nav>Use the YouTube version instead</button></p>
+      <div class="actions">
+        <button class="act" type="button" data-back data-nav><span data-icon="chevL"></span>Back</button>
+        <button class="act" type="button" id="nyan-forget" data-nav hidden>Forget copy</button>
+        <button class="act" type="button" id="nyan-play" data-nav hidden>Play<span data-icon="chevR"></span></button>
       </div>
     </div>
   </section>

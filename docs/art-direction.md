@@ -369,6 +369,7 @@ The stack, from the top, with the meta text for each button:
 | **PLAY DEMO** | `2:31 · 128 BPM`. Default focus. |
 | **PLAY AUDIO FILE** | `MP3 · WAV · OGG · FLAC` |
 | **PLAY A YOUTUBE VIDEO** | `YOUTUBE · LIVE LISTEN`. Research §5 says not to put "YouTube" in a mode or game name, so it appears only as the source. |
+| **SPECIAL LEVELS** | `DEMO · NYAN CAT`. Opens the levels stage (§7.3.1). |
 | **MODE** | Inline `‹ MONO ›`: ←/→ cycle the mode here, and Enter or click opens Mode select. |
 | **VEHICLE** | Inline `‹ DART ›`: ←/→ cycle DART / WAVE / NYAN, and Enter or click opens Vehicle select (the §7.3 stage with the real models, `SELECT VEHICLE`, `SAME RIDE · DIFFERENT LOOK`). A vehicle is only a look: motion and collision are the same. |
 | **SETTINGS** | |
@@ -428,6 +429,12 @@ Mode (and later vehicle) choice is a dedicated, interactive selection screen, no
 | SHOULDERS | safe | — | — |
 | BONUS (lime) | Clean finish +10% | Clean finish +10% | Stealth +25% |
 | BEST | local best for this song and mode, or `—` | | |
+
+#### 7.3.1 Special levels
+
+The same stage, `SPECIAL LEVELS` with the subtitle `HAND-TUNED RIDES · YOUR MODE'S RULES`. Each level has an emblem: **HYPERSURF DEMO** is the hypersurf mark (two nested peaks) over a ring of level bars; **NYAN CAT** is the Nyan vehicle inside a turning rainbow ring. The rows are SONG, SOURCE, VEHICLE, RULES and BEST; the gauges are **TOP SPEED** (×Mono), **DENSITY** (the block cap) and **MOMENTS** (big moments per minute), each ring against the larger of the two levels. The name is set smaller than a mode name (`clamp(34px, 3.4vw, 58px)`) since level names run longer. PLAY has default focus; for Nyan Cat a SONG FILE action sits between BACK and PLAY.
+
+The **Nyan Cat song** screen is the §7.2 panel: `NYAN CAT`, `YOUR OWN COPY · STAYS ON YOUR DEVICE`, a short note that the song is not included and is kept only in this browser, a status line (lime once a copy is stored), the drop zone (`DROP YOUR COPY HERE`, or `DROP A COPY TO REPLACE IT`), a `USE THE YOUTUBE VERSION INSTEAD` chip, and BACK, FORGET COPY and PLAY.
 
 ### 7.4 Settings
 

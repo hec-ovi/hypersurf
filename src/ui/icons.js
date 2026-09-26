@@ -34,6 +34,8 @@ const P = {
   board: '<path d="M12 2.5c3 3 4.2 7.5 4.2 11.5v6.5L12 18l-4.2 2.5V14C7.8 10 9 5.5 12 2.5z"/><path d="M12 6.5v8"/>',
   cat: '<path d="M8.5 8.5h8v7h-8z"/><path d="M16.5 15.5h4.5V11l-1-2.5-1.5 2h-1l-1-2"/><path d="M2.5 10h4M2.5 12.5h4M2.5 15h4"/>',
   diamond: '<path d="M12 4 20 12 12 20 4 12z"/>',
+  // Level glyphs (Nyan uses cat): the hypersurf mark, two nested peaks.
+  mark: '<path d="M3 19.5 12 5l9 14.5"/><path d="M7.5 19.5 12 12.5l4.5 7"/>',
 };
 
 /** An SVG string for an icon. */

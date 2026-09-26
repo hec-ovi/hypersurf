@@ -147,3 +147,32 @@ test('the rainbow palette cycles along the track', () => {
   assert.ok(diff(c(k), c(j)) < 0.08, 'one rainbow length on, the colour comes round again');
   assert.ok(diff(c(k), c(h)) > 0.3, 'half way round it is another colour');
 });
+
+test('the levels screen reads its numbers from the modes and the presets', async () => {
+  const { levelFacts, levelOptions, LEVELS, LEVEL_ORDER } = await import('../src/ui/levels.js');
+  assert.deepEqual(LEVEL_ORDER, ['demo', 'nyan']);
+  assert.equal(LEVELS.demo.preset, null, 'the demo level is the plain demo');
+  const demoF = levelFacts('demo'), nyanF = levelFacts('nyan');
+  assert.equal(demoF.speed, 1);
+  assert.equal(nyanF.speed, P.speed.max / MODES.mono.speedMax);
+  assert.ok(nyanF.speed >= 1.6 && nyanF.speed <= 1.8, `×${nyanF.speed}`);
+  assert.equal(nyanF.speedFraction, 1);
+  assert.equal(nyanF.density, P.maxRate);
+  assert.ok(nyanF.moments > demoF.moments * 1.5);
+  assert.equal(nyanF.vehicle, 'Nyan');
+  const opts = levelOptions(null, () => '—', (id) => (id === 'nyan' ? 'Your copy · needed' : 'Built in'));
+  for (const o of opts) {
+    assert.equal(o.gauges.length, 3);
+    assert.ok(o.gauges.every((g) => g.fraction > 0 && g.fraction <= 1));
+    assert.equal(typeof o.build, 'function');
+  }
+  assert.equal(opts[1].rows.find((r) => r.label === 'Source').value, 'Your copy · needed');
+});
+
+test('the song store resolves quietly without browser storage', async () => {
+  const { SongStore } = await import('../src/ui/songstore.js');
+  const store = new SongStore(null);
+  assert.equal(await store.get('nyan'), null);
+  assert.equal(await store.put('nyan', { name: 'x.mp3', size: 1 }), false);
+  assert.equal(await store.remove('nyan'), false);
+});

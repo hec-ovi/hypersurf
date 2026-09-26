@@ -33,6 +33,9 @@ import { Loading } from './ui/loading.js';
 import { SelectStage } from './ui/stage.js';
 import { modeOptions } from './ui/modes.js';
 import { vehicleOptions } from './ui/vehicles.js';
+import { levelOptions, LEVELS } from './ui/levels.js';
+import { SongStore, storedFile } from './ui/songstore.js';
+import { LEVEL_PRESETS } from './audio/levels.js';
 import { createVehicle, VEHICLES, VEHICLE_ORDER, DEFAULT_VEHICLE, vehicleId } from './game/vehicles/index.js';
 import { createUniforms } from './game/materials.js';
 import { mountIcons } from './ui/icons.js';
@@ -59,6 +62,7 @@ const SETTINGS_KEY = 'hypersurf.settings';
 
 const $ = (id) => document.getElementById(id);
 const storage = safeLocalStorage();
+const songStore = new SongStore();
 const fx = new FxLayer($('fx'));
 const sky = new TerrainSky($('sky'));
 const toasts = new Toasts($('toasts'));
@@ -189,10 +193,10 @@ function saveSettings() {
 
 /** Screen shown in each state. Menu screens sit over the terrain sky; pause and results over the frozen game. */
 const SCREENS = {
-  menu: 'menu', file: 'file', video: 'video', mode: 'mode', vehicle: 'vehicle', settings: 'settings', howto: 'howto',
+  menu: 'menu', file: 'file', video: 'video', mode: 'mode', vehicle: 'vehicle', levels: 'levels', nyan: 'nyan', settings: 'settings', howto: 'howto',
   analyze: 'loading', paused: 'pause', results: 'results',
 };
-const SKY = new Set(['menu', 'file', 'video', 'howto', 'analyze']);
+const SKY = new Set(['menu', 'file', 'video', 'nyan', 'howto', 'analyze']);
 
 function setState(state, initialFocus = null) {
   const prev = app.state;
@@ -278,7 +282,7 @@ async function run(task) {
     setState('menu');
     const fileProblem = err && err.file;
     note('error', err && err.title ? err.title : 'Could not play that', err && err.userMessage ? err.userMessage : `Something went wrong: ${err && err.message ? err.message : err}`, {
-      action: fileProblem ? { label: 'Try another file', run: () => setState('file') } : null,
+      action: fileProblem ? { label: 'Try another file', run: () => (err.level ? openNyan() : setState('file')) } : null,
       links: fileProblem ? [{ label: 'Play demo', run: playDemo }] : [],
       focus: !!fileProblem,
     });
@@ -287,11 +291,12 @@ async function run(task) {
   }
 }
 
-function userError(text, title = '', file = false) {
+function userError(text, title = '', file = false, level = null) {
   const e = new Error(text);
   e.userMessage = text;
   if (title) e.title = title;
   e.file = file;
+  e.level = level;
   return e;
 }
 
@@ -326,7 +331,7 @@ function playDemo() {
       loadUi.stats(statsLine(r.songMap));
       app.analyzedKey = 'demo';
       app.song = {
-        key: 'demo', title: 'hypersurf demo', source: 'demo',
+        key: 'demo', title: 'hypersurf demo', source: 'demo', seed: 'demo', level: null,
         buffer: toAudioBuffer(app.ctx, r.channels, r.sampleRate), maps: { [mode]: r.songMap }, timings: r.timings,
       };
     }
@@ -335,38 +340,127 @@ function playDemo() {
   });
 }
 
-function playFile(file) {
+/**
+ * Play an audio file. With a special level, the file is that level's song
+ * (its preset applies), and `keep` stores it in this browser once it has
+ * decoded, for a one-click start next time.
+ */
+function playFile(file, { level = null, keep = false } = {}) {
   return run(async () => {
     if (!file) return;
     ensureAudio();
     await ready();
     const mode = currentMode();
-    const title = file.name.replace(/\.[^.]+$/, '') || 'Untitled';
+    const title = level ? LEVELS[level].title : file.name.replace(/\.[^.]+$/, '') || 'Untitled';
     setState('analyze');
     loadUi.begin(title, `${MODE_LABEL[mode]} · ${file.name.split('.').pop().toUpperCase()}`, { file: true });
     loadUi.stage('decode');
     const bytes = await file.arrayBuffer();
-    const key = await sha256Hex(bytes);
+    const hash = await sha256Hex(bytes);
+    const key = level ? `level:${level}:${hash.slice(0, 16)}` : hash;
     checkCancel();
     if (!(app.song && app.song.key === key)) {
       let buffer;
       try {
         buffer = await app.ctx.decodeAudioData(bytes);
       } catch {
-        throw userError(`“${file.name}” could not be decoded. Try an MP3, WAV, OGG, FLAC or M4A file.`, 'File not readable', true);
+        throw userError(`“${file.name}” could not be decoded. Try an MP3, WAV, OGG, FLAC or M4A file.`, 'File not readable', true, level);
       }
-      if (buffer.duration > MAX_SECONDS) throw userError('That song is longer than 15 minutes. Please pick a shorter one.', 'Song too long', true);
-      if (buffer.duration < MIN_SECONDS) throw userError('That file is too short to ride.', 'Song too short', true);
+      if (buffer.duration > MAX_SECONDS) throw userError('That song is longer than 15 minutes. Please pick a shorter one.', 'Song too long', true, level);
+      if (buffer.duration < MIN_SECONDS) throw userError('That file is too short to ride.', 'Song too short', true, level);
       checkCancel();
+      if (keep) await keepLevelSong(level, file);
       loadUi.el.meta.textContent = `${MODE_LABEL[mode]} · ${clock(buffer.duration)}`;
-      const r = await analyzer().analyze(copyChannels(buffer), buffer.sampleRate, { mode, seed: key, onProgress });
+      const seed = level ? `level:${level}` : key;
+      const r = await analyzer().analyze(copyChannels(buffer), buffer.sampleRate, { mode, seed, level, onProgress });
       checkCancel();
       loadUi.stats(statsLine(r.songMap));
       app.analyzedKey = key;
-      app.song = { key, title, source: 'file', buffer, maps: { [mode]: r.songMap }, timings: r.timings };
-    }
+      // A level keeps one best per mode, whichever copy of its song rode it.
+      app.song = { key, bestKey: level ? `level:${level}` : key, title, source: 'file', seed, level, buffer, maps: { [mode]: r.songMap }, timings: r.timings };
+    } else if (keep) await keepLevelSong(level, file);
     await startSong(mode);
   });
+}
+
+// --- special levels ---------------------------------------------------------------
+
+/** What this browser holds for the Nyan level: { name, size } or null (null until read). */
+let nyanCopy = null;
+
+async function readNyanCopy() {
+  const rec = await songStore.get('nyan');
+  nyanCopy = rec ? { name: rec.name, size: rec.size } : null;
+  return rec;
+}
+
+function levelSource(id) {
+  if (LEVELS[id].source === 'demo') return 'Built in';
+  return nyanCopy ? 'Your copy · stored' : 'Your copy · needed';
+}
+
+/** The special levels screen; the stage shows the last level picked. */
+function openLevels() {
+  if (app.busy) return;
+  setState('levels');
+  showLevelSong(levelStage.value);
+  readNyanCopy().then(() => { if (app.state === 'levels') levelStage.show(levelStage.value, app.view && app.view.gfx.renderer ? app.view.gfx : null); });
+}
+
+function showLevelSong(id) {
+  app.settings.levels = id;
+  $('level-song').hidden = LEVELS[id].source !== 'own';
+}
+
+/** PLAY on the levels screen: the demo, or Nyan Cat from the stored copy (asking for one the first time). */
+function playLevel(id) {
+  if (id === 'demo') { playDemo(); return; }
+  try { ensureAudio(); } catch { /* playFile reports it */ }
+  readNyanCopy().then((rec) => {
+    if (rec) playFile(storedFile(rec), { level: 'nyan' });
+    else openNyan();
+  });
+}
+
+/** The Nyan song screen: pick, drop, replace or forget the stored copy, or take the YouTube version. */
+function openNyan() {
+  if (app.busy) return;
+  setState('nyan');
+  fillNyan();
+  readNyanCopy().then(fillNyan);
+}
+
+function fillNyan() {
+  const has = !!nyanCopy;
+  const st = $('nyan-status');
+  st.textContent = has ? `Stored in this browser · ${nyanCopy.name} · ${(nyanCopy.size / 1048576).toFixed(1)} MB` : 'No copy stored yet';
+  st.className = `status ${has ? 'ok' : ''}`;
+  $('nyan-drop-title').textContent = has ? 'Drop a copy to replace it' : 'Drop your copy here';
+  $('nyan-play').hidden = !has;
+  $('nyan-forget').hidden = !has;
+  if (app.state === 'nyan') focus.show($('nyan'), has ? $('nyan-play') : $('nyan-browse'));
+}
+
+/** Store the level's song after it decoded; say so if this browser will not keep it. */
+async function keepLevelSong(level, file) {
+  const ok = await songStore.put(level, file);
+  if (ok) nyanCopy = { name: file.name, size: file.size };
+  else note('warn', 'Copy not kept', 'This browser gives the page no storage, so pick the song again next time. It still plays now.');
+}
+
+async function forgetNyan() {
+  const ok = await songStore.remove('nyan');
+  if (ok) nyanCopy = null;
+  fillNyan();
+  note(ok ? 'info' : 'warn', ok ? 'Copy forgotten' : 'Not forgotten', ok ? 'Your Nyan Cat copy is gone from this browser.' : 'This browser would not let the page change its storage.');
+}
+
+/** The Nyan Cat YouTube upload through the live listen path instead of a copy. */
+function nyanYouTube() {
+  openVideo();
+  if (app.state !== 'video') return;
+  $('yt-input').value = PRESETS.nyan.link;
+  onLinkInput(); // Start takes focus once the video is found
 }
 
 /** A short stats line for the loading screen. */
@@ -467,11 +561,11 @@ async function startSong(mode) {
       // The worker holds another song's features: analyse this one again.
       const r = song.source === 'demo'
         ? await analyzer().demo({ sampleRate: app.ctx.sampleRate, mode, onProgress })
-        : await analyzer().analyze(copyChannels(song.buffer), song.buffer.sampleRate, { mode, seed: song.key, onProgress });
+        : await analyzer().analyze(copyChannels(song.buffer), song.buffer.sampleRate, { mode, seed: song.seed, level: song.level, onProgress });
       map = r.songMap;
       app.analyzedKey = song.key;
     } else {
-      map = (await analyzer().build({ mode, seed: song.source === 'demo' ? 'demo' : song.key })).songMap;
+      map = (await analyzer().build({ mode, seed: song.seed, level: song.level })).songMap;
     }
     checkCancel();
     song.maps[mode] = map;
@@ -484,6 +578,9 @@ async function startSong(mode) {
     app.gridFor = map;
   }
   const view = app.view;
+  // A special level rides its own vehicle; everything else the chosen one.
+  const preset = song.level ? LEVEL_PRESETS[song.level] : null;
+  view.setVehicle(preset && preset.vehicle ? preset.vehicle : app.settings.vehicle);
   if (view.map !== map) {
     view.load(map);
     app.hud.load(map, view.path, song.title);
@@ -500,7 +597,8 @@ async function startSong(mode) {
 /** (Re)start the current map from the top of the lead-in. Instant: nothing is re-analysed. */
 async function beginRun() {
   const map = app.map;
-  const start = Math.min(FROM, Math.max(0, map.duration - 5)) - LEAD_IN;
+  // A level whose music starts late begins LEAD_IN before its music.
+  const start = Math.min(Math.max(FROM, map.start || 0), Math.max(0, map.duration - 5)) - LEAD_IN;
   await resetRun(start);
   app.nextBeat = 0;
   while (app.nextBeat < map.beats.length && map.beats[app.nextBeat] < start) app.nextBeat++;
@@ -521,7 +619,7 @@ async function resetRun(start) {
   app.juice.calm = app.settings.calm;
   app.input.reset();
   app.input.setShoulders(RULES[mode].shoulders);
-  const songKey = app.live ? app.live.song.key : app.song.key;
+  const songKey = app.live ? app.live.song.key : app.song.bestKey || app.song.key;
   const best = app.best.get(songKey, mode);
   app.hud.reset(mode, best ? best.final : 0);
   app.autopilot = app.autopilotOn ? createAutopilot(map.blocks) : null;
@@ -566,7 +664,7 @@ function finishRun() {
   }
   const song = live ? live.song : app.song;
   const results = app.rules.results();
-  const best = app.best.submit(song.key, app.mode, results, app.map.hash);
+  const best = app.best.submit(song.bestKey || song.key, app.mode, results, app.map.hash);
   stats.lastResults = results;
   if (app.stopCount) app.stopCount();
   app.stopCount = showResults($('results'), { results, best, title: song.title, modeLabel: MODE_LABEL[app.mode] });
@@ -751,6 +849,7 @@ async function beginLiveRun() {
   const duration = demo ? app.song.buffer.duration : live.yt.duration;
   const map = new LiveMap({ mode, seed: live.song.key, duration });
   map.setOctave(app.octave);
+  view.setVehicle(app.settings.vehicle);
   live.map = map;
   live.seen = 0;
   app.map = map;
@@ -1376,8 +1475,15 @@ const vehicleStage = new SelectStage($('vehicle'), vehicleOptions((id, parent) =
   if (!stageUniforms) stageUniforms = createUniforms();
   return createVehicle(id, parent, stageUniforms);
 }), { fx, noun: 'vehicle' });
+const levelStage = new SelectStage($('levels'), levelOptions((id, parent) => {
+  if (!stageUniforms) stageUniforms = createUniforms();
+  return createVehicle(id, parent, stageUniforms);
+}, (id) => {
+  const b = app.best.get(LEVELS[id].source === 'demo' ? 'demo' : `level:${id}`, currentMode());
+  return b ? formatScore(b.final) : '—';
+}, levelSource), { fx, noun: 'level', onChange: showLevelSong });
 /** The selection stages by state; each shows app.settings[state]. */
-const STAGES = { mode: stage, vehicle: vehicleStage };
+const STAGES = { mode: stage, vehicle: vehicleStage, levels: levelStage };
 const beatCheck = new BeatCheck(document.querySelector('.beatcheck'), {
   audio: () => app.ctx,
   latencyMs: () => app.settings.latency,
@@ -1566,6 +1672,7 @@ function wireUi() {
   $('demo-btn').addEventListener('click', playDemo);
   $('file-btn').addEventListener('click', () => setState('file'));
   $('video-btn').addEventListener('click', openVideo);
+  $('levels-btn').addEventListener('click', openLevels);
   const modeBtn = $('mode-btn');
   modeBtn.addEventListener('click', () => setState('mode'));
   modeBtn.addEventListener('step', (e) => {
@@ -1611,24 +1718,25 @@ function wireUi() {
     fileInput.value = '';
     if (f) playFile(f);
   });
-  const drop = $('drop');
-  const canDrop = () => app.state === 'menu' || app.state === 'file';
+  // A drop on the Nyan screen is its song; on the menu or the file screen, a song to play.
+  const dropZone = () => $(app.state === 'nyan' ? 'nyan-drop' : 'drop');
+  const canDrop = () => app.state === 'menu' || app.state === 'file' || app.state === 'nyan';
   window.addEventListener('dragover', (e) => {
     e.preventDefault();
     if (canDrop()) {
       if (app.state === 'menu') setState('file');
-      drop.classList.add('over');
+      dropZone().classList.add('over');
     }
   });
   window.addEventListener('dragleave', (e) => {
-    if (!e.relatedTarget) drop.classList.remove('over');
+    if (!e.relatedTarget) dropZone().classList.remove('over');
   });
   window.addEventListener('drop', (e) => {
     e.preventDefault();
-    drop.classList.remove('over');
+    dropZone().classList.remove('over');
     if (!canDrop()) return;
     const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-    if (f) playFile(f);
+    if (f) playFile(f, app.state === 'nyan' ? { level: 'nyan', keep: true } : {});
   });
 
   // Video setup.
@@ -1664,6 +1772,21 @@ function wireUi() {
     setVehicle(vehicleStage.value);
     setState('menu');
   });
+  $('levels').querySelector('[data-stage-confirm]').addEventListener('click', () => playLevel(levelStage.value));
+  $('level-song').addEventListener('click', openNyan);
+
+  // The Nyan Cat song.
+  const nyanInput = $('nyan-input');
+  $('nyan-browse').addEventListener('click', () => nyanInput.click());
+  $('nyan-drop').addEventListener('click', (e) => { if (e.target === $('nyan-drop')) nyanInput.click(); });
+  nyanInput.addEventListener('change', () => {
+    const f = nyanInput.files && nyanInput.files[0];
+    nyanInput.value = '';
+    if (f) playFile(f, { level: 'nyan', keep: true });
+  });
+  $('nyan-play').addEventListener('click', () => playLevel('nyan'));
+  $('nyan-forget').addEventListener('click', forgetNyan);
+  $('nyan-yt').addEventListener('click', nyanYouTube);
 
   // Settings.
   const latency = $('latency');
@@ -1726,6 +1849,8 @@ function wireUi() {
   focus.register('video', { back: () => back('video') });
   focus.register('mode', { back: () => back('mode'), side: (dir) => { stage.step(dir); return true; } });
   focus.register('vehicle', { back: () => back('vehicle'), side: (dir) => { vehicleStage.step(dir); return true; } });
+  focus.register('levels', { back: () => back('levels'), side: (dir) => { levelStage.step(dir); return true; } });
+  focus.register('nyan', { back: () => back('nyan') });
   focus.register('settings', { back: () => back('settings'), tab: (dir) => tabStep('settings', dir) });
   focus.register('howto', { back: () => back('howto'), tab: (dir) => tabStep('howto', dir) });
   focus.register('loading', { back: cancelLoad });
@@ -1783,6 +1908,7 @@ function wireUi() {
 function back(id) {
   if (id === 'settings') closeSettings();
   else if (id === 'video') { if (!app.busy) { leaveLive(); $('yt-input').value = ''; videoStatus(''); canStart(false); setState('menu'); } }
+  else if (id === 'nyan') setState('levels');
   else setState('menu');
 }
 

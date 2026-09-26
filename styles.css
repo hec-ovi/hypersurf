@@ -99,6 +99,7 @@ body[data-state="paused"] #view,
 body[data-state="results"] #view,
 body[data-state="mode"] #view,
 body[data-state="vehicle"] #view,
+body[data-state="levels"] #view,
 body[data-over="game"] #view { opacity: 1; }
 /* Panels over a frozen game: a CSS filter on a canvas that is no longer drawn. */
 body[data-state="paused"] #view,
@@ -414,13 +415,13 @@ body.pad .pad-only { display: inline-flex !important; }
 .field .input .ico { width: 20px; height: 20px; color: var(--cyan); }
 .field input { flex: 1; min-width: 0; background: none; border: 0; outline: none; font: 500 19px/1.2 var(--f-display); letter-spacing: .02em; color: var(--text); }
 .field input::placeholder { color: var(--text-3); }
-.field .status { min-height: 20px; margin-top: 10px; display: flex; align-items: center; gap: 10px; font: 600 14px/1.2 var(--f-ui); letter-spacing: .14em; text-transform: uppercase; color: var(--text-2); }
-.field .status::before { content: ""; width: 7px; height: 7px; background: currentColor; transform: rotate(45deg); flex: none; }
-.field .status:empty::before { display: none; }
-.field .status.ok { color: var(--lime); }
-.field .status.ok::before { box-shadow: 0 0 6px var(--lime); }
-.field .status.bad { color: var(--red); text-transform: none; letter-spacing: .03em; font-weight: 500; font-size: 15px; }
-.field .status.wait::before { animation: blink 1s ease-in-out infinite; }
+:is(.field, #nyan) .status { min-height: 20px; margin-top: 10px; display: flex; align-items: center; gap: 10px; font: 600 14px/1.2 var(--f-ui); letter-spacing: .14em; text-transform: uppercase; color: var(--text-2); }
+:is(.field, #nyan) .status::before { content: ""; width: 7px; height: 7px; background: currentColor; transform: rotate(45deg); flex: none; }
+:is(.field, #nyan) .status:empty::before { display: none; }
+:is(.field, #nyan) .status.ok { color: var(--lime); }
+:is(.field, #nyan) .status.ok::before { box-shadow: 0 0 6px var(--lime); }
+:is(.field, #nyan) .status.bad { color: var(--red); text-transform: none; letter-spacing: .03em; font-weight: 500; font-size: 15px; }
+:is(.field, #nyan) .status.wait::before { animation: blink 1s ease-in-out infinite; }
 @keyframes blink { 50% { opacity: .35; } }
 .note { margin-top: 18px; font: 500 15px/1.45 var(--f-ui); color: var(--text-2); }
 #video .no-live { display: none; }
@@ -445,6 +446,7 @@ body.no3d .stage-fallback { display: block; }
 .stage-arrow.next { right: 25%; }
 .stage-info { position: absolute; left: var(--gutter); top: 50%; transform: translateY(-50%); width: min(24vw, 400px); }
 .stage-name { margin-top: 10px; font: 800 clamp(44px, 5.4vw, 86px)/1 var(--f-display); letter-spacing: .08em; text-transform: uppercase; color: var(--text); text-shadow: 0 0 22px rgba(63, 224, 208, .35); white-space: nowrap; }
+#levels .stage-name { font-size: clamp(34px, 3.4vw, 58px); } /* level names run longer than mode names */
 .stage-desc { margin-top: 14px; font: 500 17px/1.45 var(--f-ui); color: var(--text-2); min-height: 2.9em; }
 .stage-rows { margin-top: 20px; border-top: 1px solid var(--line); }
 .stage-rows li { padding: 10px 2px; font-size: 13px; }
@@ -604,7 +606,7 @@ body.calm .stack .cb { animation: none !important; }
   .wordmark { left: -40%; right: -40%; }
   .stack-col { padding: 64px 0 22px; }
   .stack { gap: 14px; }
-  .stack .cb { --h: 54px; --b: 26px; font-size: 19px; width: calc(100% - 24px - (6 - var(--i, 0)) * 8px); }
+  .stack .cb { --h: 54px; --b: 26px; font-size: 19px; width: calc(100% - 24px - (7 - var(--i, 0)) * 8px); }
   .stack .quit-gap { height: 0; }
   .cb .meta:not(.sel-inline) { display: none; }
   .cb .meta { margin-right: 14%; }
@@ -641,6 +643,7 @@ body.calm .stack .cb { animation: none !important; }
   .stage-arrow.next { right: 6px; }
   .stage-info { position: absolute; top: calc(70px + 40vh); left: 16px; right: 16px; transform: none; width: auto; text-align: center; }
   .stage-name { font-size: 44px; margin-top: 4px; }
+  #levels .stage-name { font-size: 30px; }
   .stage-desc { font-size: 15px; min-height: 0; }
   .stage-rows, .stage-info .eyebrow { display: none; }
   .stage-gauges { position: absolute; top: auto; bottom: 150px; left: 16px; right: 16px; transform: none; width: auto; grid-template-columns: repeat(3, 1fr); }
