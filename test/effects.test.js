@@ -32,3 +32,28 @@ test('beat pulses and bursts share the limiter; calm visuals drop pulses', () =>
   calm.update(1);
   assert.ok(calm.bloom < 0.01);
 });
+
+test('cash-in shockwaves share the limiter and dim instead of vanishing', () => {
+  const j = new Juice();
+  for (let k = 0; k < 3; k++) j.onBeat(k, k * 0.1, 1); // three flashes in 0.3 s
+  j.cashIn(0.35, 21);
+  assert.equal(j.shockTime, 0.35);
+  assert.ok(j.shock > 0 && j.shock < 0.5, `limited shock ${j.shock}`);
+  j.cashIn(1.5, 21);
+  assert.ok(j.shock > 0.9, `full shock ${j.shock}`);
+  const calm = new Juice();
+  calm.calm = true;
+  calm.cashIn(0, 3);
+  assert.ok(calm.shock > 0 && calm.shock < 0.3);
+});
+
+test('impact envelopes are over within about 250 ms', () => {
+  const j = new Juice();
+  j.hit();
+  j.power();
+  j.grey();
+  j.burst(0.6, 0);
+  for (let k = 0; k < 15; k++) j.update(1 / 60);
+  for (const key of ['ship', 'kick', 'debris', 'desaturate', 'bloom']) assert.ok(j[key] < 0.2 * (key === 'kick' ? 0.08 : 1), `${key} ${j[key]}`);
+  assert.ok(j.lens < 0.5 && j.fov < 4, 'the power punch has faded well down');
+});

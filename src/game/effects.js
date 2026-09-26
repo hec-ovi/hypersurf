@@ -36,8 +36,11 @@ export class FlashLimiter {
 
 /**
  * Decaying envelopes for the renderer: beat pulse, bloom burst, FOV punch,
- * ship flash, desaturation. Each is a value that jumps up when triggered
- * and decays exponentially; update() runs once per frame.
+ * ship flash, desaturation, camera kick, lens punch (radial blur at a
+ * power block's loop entry), debris flash and the cash-in shockwave. Each
+ * jumps up when triggered and decays exponentially; update() runs once per
+ * frame. Budgets from docs/research.md §4: everything but the shockwave's
+ * travel is over within about 250 ms.
  */
 export class Juice {
   constructor(limiter = new FlashLimiter()) {
@@ -49,11 +52,17 @@ export class Juice {
     this.ship = 0; // ship emissive flash 0..1
     this.desaturate = 0; // 0..1
     this.kick = 0; // camera kick, metres
+    this.lens = 0; // radial blur punch 0..1
+    this.debris = 0; // air debris flash 0..1
+    this.shock = 0; // shockwave brightness 0..1
+    this.shockTime = -1e9; // song time the shockwave left the ship
     this._lastBeat = -1;
   }
 
   reset() {
     this.beat = this.bloom = this.fov = this.ship = this.desaturate = this.kick = 0;
+    this.lens = this.debris = this.shock = 0;
+    this.shockTime = -1e9;
     this._lastBeat = -1;
     this.limiter.reset();
   }
@@ -72,17 +81,34 @@ export class Juice {
     if (this.limiter.tryFlash(now)) this.bloom = Math.min(1.2, this.bloom + a);
   }
 
+  /** A colour block was hit: ship flash, camera kick, debris flash. */
   hit() {
     this.ship = 1;
     this.kick = 0.08;
+    this.debris = this.calm ? 0.35 : 1;
   }
 
+  /** A power block: FOV punch and a radial-blur punch into the loop. */
   power() {
     this.fov = 8;
+    this.lens = this.calm ? 0.4 : 1;
+    this.debris = this.calm ? 0.35 : 1;
   }
 
   grey() {
     this.desaturate = 1;
+  }
+
+  /**
+   * A match cashed in at song time `now`: a shockwave runs down the track.
+   * Its brightness shares the flash limiter; when the limiter says no the
+   * wave still runs, dimmed, so the cash-in is never silent.
+   */
+  cashIn(now, size = 3) {
+    const full = Math.min(1, 0.55 + size / 21);
+    const allowed = !this.calm && this.limiter.tryFlash(now);
+    this.shock = allowed ? full : full * 0.35;
+    this.shockTime = now;
   }
 
   /** Decay everything over dt seconds (time constants from docs/research.md §4). */
@@ -93,5 +119,8 @@ export class Juice {
     this.ship *= Math.exp(-dt / 0.08);
     this.desaturate *= Math.exp(-dt / 0.15);
     this.kick *= Math.exp(-dt / 0.1);
+    this.lens *= Math.exp(-dt / 0.35);
+    this.debris *= Math.exp(-dt / 0.12);
+    this.shock *= Math.exp(-dt / 0.45);
   }
 }
