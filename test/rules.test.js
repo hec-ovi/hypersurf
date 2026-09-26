@@ -318,3 +318,19 @@ test('modes are variants of one rule set', () => {
   assert.ok(MODES.casual.maxPowerBlocks <= 2 && MODES.mono.maxPowerBlocks > 2);
   assert.throws(() => new RulesEngine(makeBlocks([]), 'wakeboard'));
 });
+
+test('skipTo starts a play mid-song without crediting earlier blocks', () => {
+  const blocks = makeBlocks([
+    { t: 1, lane: 0 }, { t: 2, lane: 0 }, { t: 3, lane: 0 }, { t: 5, lane: 0 }, { t: 6, lane: 0 },
+  ]);
+  const g = new RulesEngine(blocks, 'mono');
+  g.skipTo(4);
+  assert.equal(g.eventCount, 0);
+  assert.equal(g.score, 0);
+  for (let t = 4; t <= 7; t += 1 / 240) g.step(t, 0);
+  const r = g.results();
+  assert.equal(r.stats.colourHit, 2, 'only the blocks after the start');
+  // Going backwards is ignored.
+  g.skipTo(1);
+  assert.equal(g.now >= 7 - 1e-9, true);
+});

@@ -264,6 +264,21 @@ export class RulesEngine {
     while (this._first < b.count && this.state[this._first] !== PENDING) this._first++;
   }
 
+  /**
+   * Start a fresh play at song time t instead of the top (practice and
+   * debug starts): blocks whose windows closed before t are resolved as
+   * missed without events or score, and the clock starts at t.
+   */
+  skipTo(t) {
+    if (!(t > this.now)) return;
+    const b = this.blocks;
+    for (let i = this._first; i < b.count && b.time[i] - HIT_WINDOW.colour.early < t; i++) {
+      if (this.state[i] === PENDING && b.time[i] + hitWindow(b.type[i]).late < t) this.state[i] = MISSED;
+    }
+    while (this._first < b.count && this.state[this._first] !== PENDING) this._first++;
+    this.now = t;
+  }
+
   /** End of song: a live match is scored and anything left untouched counts as missed. */
   finish() {
     if (this.finished) return;
