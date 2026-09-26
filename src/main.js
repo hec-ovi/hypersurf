@@ -483,7 +483,7 @@ function onEvent(ev) {
       view.blocks.shatter(ev.block, view.path.sample(ev.time, app.hitSample), performance.now() / 1000);
       break;
     case EVENT.COLLECT:
-      if (ev.value > 0) juice.burst(0.3, now);
+      if (ev.value > 0) juice.cashIn(now, ev.count);
       break;
     case EVENT.MISS:
       stats.misses++;

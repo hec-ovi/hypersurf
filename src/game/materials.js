@@ -7,7 +7,7 @@
 import * as THREE from 'three/webgpu';
 import {
   attribute, uniform, uniformArray, vec3, vec4, float, int, abs, max, min, mix, smoothstep, fract, exp, pow, dot, normalize,
-  fwidth, saturate, step, sin, cos, floor, length, positionGeometry, normalView, positionViewDirection, Fn,
+  fwidth, saturate, step, sin, cos, floor, length, cross, positionGeometry, normalView, positionViewDirection, cameraPosition, Fn,
 } from 'three/tsl';
 import { hexToLinear, PALETTE } from './palette.js';
 
@@ -23,23 +23,44 @@ export function createUniforms() {
     shipFlash: uniform(0),
     starPhase: uniform(0), // ∫ I dt, drives the star drift
     bands: uniformArray(new Array(16).fill(0), 'float'), // skyline band levels 0..1
+    shock: uniform(0), // cash-in shockwave brightness 0..1
+    shockTime: uniform(-1e9), // song time the shockwave left the ship
+    debrisFlash: uniform(0), // air debris flash on hits 0..1
+    speed: uniform(0), // ship speed m/s (debris streaks)
+    trackFwd: uniform(new THREE.Vector3(0, 0, -1)), // track forward at the ship
   };
 }
 
+/** A hue wheel 0..1 → saturated linear RGB (cheap cosine palette). */
+const hue = (h) => vec3(cos(h.mul(6.2832)), cos(h.mul(6.2832).sub(2.0944)), cos(h.mul(6.2832).add(2.0944))).mul(0.5).add(0.5);
+
 /**
- * Track ribbon. Per vertex: aData = (lateral m, part, song time, beat
- * position) with part 0 surface, 1 rail, 2 underside; aTint = (node colour,
- * intensity).
+ * Track ribbon. Per vertex: aData = (lateral m, part + 0.25·inLoop, song
+ * time, beat position) with part 0 surface, 1 rail, 2 underside and inLoop
+ * 1 on loop nodes (it interpolates smoothly into and out of a loop);
+ * aTint = (node colour, intensity).
+ *
+ * Surface: albedo #0A0C14 with a Fresnel rim, analytic lane lines (fwidth
+ * AA), beat-locked chevrons in the centre lane, a highlight band 0.5 s
+ * ahead (the timing window) and the beat pulse. Rails glow with intensity.
+ * Loop sections are pre-lit: their rails and lines carry a travelling
+ * rainbow chase bright enough to read through the fog from 600 m, so the
+ * loop announces itself seconds before the drop. A cash-in shockwave runs
+ * down the track as a bright band. The track behind the ship fades to 20%.
  */
 export function trackMaterial(u) {
   const m = new THREE.MeshBasicNodeMaterial();
   const data = attribute('aData', 'vec4');
   const tint = attribute('aTint', 'vec4');
   m.colorNode = Fn(() => {
-    const lat = data.x, part = data.y, tNode = data.z, beatPos = data.w;
+    const lat = data.x, tNode = data.z, beatPos = data.w;
+    const part = floor(data.y);
+    const inLoop = fract(data.y).mul(4);
     const col = tint.xyz, I = tint.w;
     const facing = abs(dot(normalView, positionViewDirection));
-    const rim = pow(float(1).sub(facing), 3);
+    // Fresnel sheen only at truly grazing angles (the far track); from the
+    // low intense camera pose a softer power washed the near surface out.
+    const rim = pow(float(1).sub(facing), 6);
     const pulse = u.beat.mul(0.6);
 
     // Lane dividers (±1.5) and shoulders (±4.5): analytic lines, fwidth anti-aliased.
@@ -50,20 +71,44 @@ export function trackMaterial(u) {
     // Chevrons in the centre lane, one per beat, phase-locked to the grid.
     const v = fract(beatPos.sub(aLat.mul(0.16)));
     const chev = smoothstep(0, 0.03, v).mul(float(1).sub(smoothstep(0.08, 0.14, v))).mul(float(1).sub(smoothstep(0.9, 1.25, aLat)));
+    // Faint beat rungs across the outer lanes: the grid the blocks sit on.
+    const bf = fract(beatPos);
+    const rung = smoothstep(0.985, 1, bf).add(float(1).sub(smoothstep(0, 0.01, bf))).mul(smoothstep(1.6, 2, aLat)).mul(float(1).sub(smoothstep(4.3, 4.5, aLat)));
     // A soft band 0.5 s ahead of the ship marks where blocks are about to be hit.
     const dtF = tNode.sub(u.time.add(0.5)).mul(10);
     const future = exp(dtF.mul(dtF).negate());
+    // Cash-in shockwave: a band racing ahead of the ship (4 s of track per second).
+    const front = u.shockTime.add(u.time.sub(u.shockTime).mul(4));
+    const dS = tNode.sub(front).mul(5);
+    const shock = exp(dS.mul(dS).negate()).mul(u.shock).mul(step(u.shockTime, tNode));
+    // Loop foreshadowing: a rainbow chase, pre-lit at 30% of full glow.
+    const chase = fract(beatPos.mul(2).sub(u.time.mul(1.5)));
+    const loopCol = hue(fract(tNode.mul(0.35).add(lat.mul(0.04)).sub(u.time.mul(0.25))));
+    const loopGlow = inLoop.mul(float(0.3).add(smoothstep(0.75, 1, chase).mul(0.7)));
+    const lineCol = mix(col, loopCol, inLoop.mul(0.8));
 
-    const glow = I.mul(2).add(1).mul(pulse.add(1));
+    // Lines: research §4's gradient × (1 + 2·I), scaled to 0.7 so the
+    // high-luminance yellows and greens do not flood the bloom.
+    const glow = I.mul(1.4).add(0.7).mul(pulse.add(1));
     const surface = lin(PALETTE.trackSurface)
-      .add(col.mul(rim.mul(0.6)))
-      .add(col.mul(lines.mul(glow)))
+      .add(col.mul(rim.mul(0.45)))
+      .add(lineCol.mul(lines.mul(glow.add(loopGlow.mul(4)))))
       .add(col.mul(chev.mul(pulse.mul(1.5).add(0.3))))
-      .add(col.mul(future.mul(0.15)));
-    // Rails: research §4 asks for gradient × (1.5 + 2.5·I); at 0.7 m wide and
-    // close to the camera that washed out under bloom, so they run at ~60%.
-    const rail = col.mul(I.mul(1.5).add(0.9)).mul(pulse.mul(0.5).add(1)).mul(facing.mul(0.5).add(0.5));
-    const under = lin(PALETTE.trackSurface).mul(2).add(col.mul(0.04));
+      .add(col.mul(rung.mul(0.08).mul(pulse.add(1))))
+      .add(col.mul(future.mul(0.15)))
+      .add(vec3(1).add(col).mul(shock.mul(lines.mul(3).add(0.35))));
+    // Rails: a dim body with a neon tube along the top face (lateral 5.05;
+    // the vertical faces sit at 4.7 and 5.4, so only the top carries it).
+    // Research §4's gradient × (1.5 + 2.5·I) goes into the tube; spread over
+    // the whole 0.7 m rail it washed the frame out under bloom near the camera.
+    const tube = line(5.05, 0.06);
+    const railBody = col.mul(I.mul(0.1).add(0.06));
+    const railTube = col.mul(I.mul(2.5).add(1.5)).mul(tube);
+    const rail = railBody.add(railTube).mul(pulse.mul(0.5).add(1))
+      .add(loopCol.mul(loopGlow.mul(tube.mul(5).add(0.6))))
+      .add(vec3(1).add(col).mul(shock.mul(tube.mul(3).add(0.3))))
+      .mul(facing.mul(0.5).add(0.5));
+    const under = lin(PALETTE.trackSurface).mul(2).add(col.mul(0.04)).add(loopCol.mul(loopGlow.mul(0.6)));
     const isRail = step(0.5, part).mul(step(part, 1.5));
     const isUnder = step(1.5, part);
     const isSurface = float(1).sub(step(0.5, part));

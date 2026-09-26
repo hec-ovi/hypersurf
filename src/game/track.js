@@ -111,6 +111,7 @@ export class TrackMesh {
       const px = nd.pos[k * 3] - ox, py = nd.pos[k * 3 + 1] - oy, pz = nd.pos[k * 3 + 2] - oz;
       const t = nd.t0 + k / nd.rate, beat = beats[k], I = nd.intensity[k];
       const cr = nd.color[k * 3], cg = nd.color[k * 3 + 1], cb = nd.color[k * 3 + 2];
+      const loopMark = nd.loop[k] > 0 ? 0.25 : 0;
       for (let s = 0; s < SEGMENTS; s++) {
         const p0 = PROFILE[s], p1 = PROFILE[(s + 1) % SEGMENTS];
         const dl = p1[0] - p0[0], dh = p1[1] - p0[1], len = Math.hypot(dl, dh);
@@ -121,7 +122,7 @@ export class TrackMesh {
           const x = px + rx * p[0] + ux * p[1], y = py + ry * p[0] + uy * p[1], z = pz + rz * p[0] + uz * p[1];
           P[v * 3] = x; P[v * 3 + 1] = y; P[v * 3 + 2] = z;
           N[v * 3] = nx; N[v * 3 + 1] = ny; N[v * 3 + 2] = nz;
-          Dt[v * 4] = p[0]; Dt[v * 4 + 1] = PARTS[s]; Dt[v * 4 + 2] = t; Dt[v * 4 + 3] = beat;
+          Dt[v * 4] = p[0]; Dt[v * 4 + 1] = PARTS[s] + loopMark; Dt[v * 4 + 2] = t; Dt[v * 4 + 3] = beat;
           T[v * 4] = cr; T[v * 4 + 1] = cg; T[v * 4 + 2] = cb; T[v * 4 + 3] = I;
           if (x < minX) minX = x; if (x > maxX) maxX = x;
           if (y < minY) minY = y; if (y > maxY) maxY = y;

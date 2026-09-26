@@ -136,6 +136,11 @@ export class GameView {
     u.trackColor.value.setRGB(s.r, s.g, s.b);
     u.beat.value = juice ? juice.beat : 0;
     u.shipFlash.value = juice ? juice.ship : 0;
+    u.shock.value = juice ? juice.shock : 0;
+    u.shockTime.value = juice ? juice.shockTime : -1e9;
+    u.debrisFlash.value = juice ? juice.debris : 0;
+    u.speed.value = s.speed;
+    u.trackFwd.value.set(s.fx, s.fy, s.fz);
     u.starPhase.value += I * dt * 0.03;
 
     // Post: bloom with intensity and bursts; radial speed blur above 60% of
