@@ -1147,10 +1147,10 @@ function onEvent(ev) {
  * Hold the view at song time t, for screenshots of exact moments: the song
  * pauses, the camera springs settle over `settle` seconds of 60 Hz frames
  * flown up to t with the autopilot steering, and later frames redraw that
- * moment. Juice can be forced for the shot: { beat, shock, lens, hit };
+ * moment. Juice can be forced for the shot: { beat, shock, hit };
  * swoop (0..1) shows that point of the swoop-in.
  */
-function freezeAt(t, { settle = 1.5, beat = 0, shock = 0, lens = 0, hit = 0, x = null, swoop = 1 } = {}) {
+function freezeAt(t, { settle = 1.5, beat = 0, shock = 0, hit = 0, x = null, swoop = 1 } = {}) {
   const view = app.view;
   if (t === null) {
     app.frozen = null;
@@ -1172,7 +1172,6 @@ function freezeAt(t, { settle = 1.5, beat = 0, shock = 0, lens = 0, hit = 0, x =
   app.juice.beat = beat;
   app.juice.shock = shock;
   app.juice.shockTime = t - 0.25;
-  app.juice.lens = lens;
   app.juice.debris = hit;
   app.juice.ship = hit;
   app.viewT = t;

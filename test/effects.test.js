@@ -55,7 +55,7 @@ test('impact envelopes are over within about 250 ms', () => {
   j.burst(0.6, 0);
   for (let k = 0; k < 15; k++) j.update(1 / 60);
   for (const key of ['ship', 'kick', 'debris', 'desaturate', 'bloom']) assert.ok(j[key] < 0.2 * (key === 'kick' ? 0.08 : 1), `${key} ${j[key]}`);
-  assert.ok(j.lens < 0.5 && j.fov < 4, 'the power punch has faded well down');
+  assert.ok(j.fov < 4, 'the power punch has faded well down');
 });
 
 test('hits flash the debris only when the limiter allows', () => {
@@ -70,14 +70,12 @@ test('hits flash the debris only when the limiter allows', () => {
   assert.equal(flashes, 3);
 });
 
-test('calm visuals keep power blocks free of lens punches', () => {
+test('calm visuals keep the power block punch small', () => {
   const j = new Juice();
   j.calm = true;
   j.power();
-  assert.equal(j.lens, 0);
   assert.ok(j.fov > 0 && j.fov <= 3, `calm fov punch ${j.fov}`);
   const full = new Juice();
   full.power();
-  assert.equal(full.lens, 1);
   assert.equal(full.fov, 8);
 });

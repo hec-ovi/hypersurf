@@ -4,8 +4,6 @@
 // backend on its own (?webgl=1 forces the fallback for testing). The post
 // chain (docs/research.md §4), all in TSL:
 //   scene pass (MSAA on the high tier)
-//   → radial speed blur (6 taps toward the vanishing point) with a subtle
-//     chromatic aberration, both in one sampling pass
 //   → + bloom (half resolution, quarter on the low tier), strength driven
 //     by intensity and impact bursts
 //   → desaturation (grey hits) and vignette
@@ -22,16 +20,15 @@ import { ResolutionGovernor } from './resolution.js';
 /**
  * Quality tiers. high: WebGPU with 4× MSAA. medium: the WebGL2 default,
  * FXAA instead of MSAA. low: research §4's fallback tier (quarter-res
- * bloom, no speed blur or aberration, 400 pillars, 1k debris); the game
+ * bloom, 400 pillars, 1k debris); the game
  * drops to it on its own when dynamic resolution bottoms out.
  */
 export const QUALITY = Object.freeze({
-  high: Object.freeze({ samples: 4, fxaa: false, bloom: true, bloomScale: 0.5, lensFx: true, pillars: 1152, debris: 4096, maxRatio: 2, minScale: 0.6 }),
-  medium: Object.freeze({ samples: 0, fxaa: true, bloom: true, bloomScale: 0.5, lensFx: true, pillars: 1152, debris: 4096, maxRatio: 1.25, minScale: 0.6 }),
-  low: Object.freeze({ samples: 0, fxaa: true, bloom: true, bloomScale: 0.25, lensFx: false, pillars: 384, debris: 1024, maxRatio: 1, minScale: 0.5 }),
+  high: Object.freeze({ samples: 4, fxaa: false, bloom: true, bloomScale: 0.5, pillars: 1152, debris: 4096, maxRatio: 2, minScale: 0.6 }),
+  medium: Object.freeze({ samples: 0, fxaa: true, bloom: true, bloomScale: 0.5, pillars: 1152, debris: 4096, maxRatio: 1.25, minScale: 0.6 }),
+  low: Object.freeze({ samples: 0, fxaa: true, bloom: true, bloomScale: 0.25, pillars: 384, debris: 1024, maxRatio: 1, minScale: 0.5 }),
 });
 
-const BLUR_TAPS = 6;
 // Research §4 has radius 0.45. In three's BloomNode the radius flattens the
 // mip weights toward the widest levels; with this many bright lines on
 // screen that laid a coloured veil over the whole frame. 0 keeps the glow
@@ -55,9 +52,6 @@ export class Renderer {
     this.bloomStrength = uniform(0.55);
     this.saturation = uniform(1);
     this.vignette = uniform(0.28);
-    this.blur = uniform(0); // radial blur step per tap (fraction of the distance to the centre)
-    this.aberration = uniform(0); // chromatic aberration offset (fraction of the distance)
-    this.focus = uniform(new THREE.Vector2(0.5, 0.42)); // blur centre in screen uv
   }
 
   async init() {
@@ -95,35 +89,14 @@ export class Renderer {
     const scenePass = pass(scene, camera, { samples: q.samples });
     const color = scenePass.getTextureNode('output');
 
-    let base = color;
-    if (q.lensFx) {
-      const blur = this.blur, ab = this.aberration, focus = this.focus;
-      base = Fn(() => {
-        const uv0 = screenUV;
-        const dir = uv0.sub(focus);
-        // Keep the middle of the frame (ship, blocks) sharp; smear the edges.
-        const edge = smoothstep(0.08, 0.45, dir.length());
-        const step = dir.mul(blur.mul(edge));
-        const centre = color.sample(uv0).rgb;
-        const acc = centre.toVar();
-        for (let k = 1; k < BLUR_TAPS; k++) acc.addAssign(color.sample(uv0.sub(step.mul(k))).rgb);
-        acc.divAssign(BLUR_TAPS);
-        // Chromatic aberration: red pushed out, blue pulled in, radially,
-        // added as a difference so it rides on top of the blur.
-        const ca = dir.mul(ab.mul(edge));
-        const dr = color.sample(uv0.add(ca)).r.sub(centre.r), db = color.sample(uv0.sub(ca)).b.sub(centre.b);
-        return acc.add(vec3(dr, 0, db));
-      })();
-    }
-
-    let lit = base;
+    let lit = color;
     if (q.bloom) {
       const glow = bloom(color, 1, BLOOM_RADIUS, 1);
       glow.strength = this.bloomStrength;
       glow.setResolutionScale(q.bloomScale);
       // Damp the widest mips: they spread every bright line into a veil.
       BLOOM_MIP_GAIN.forEach((g, i) => glow.bloomTintColors[i].setScalar(g));
-      lit = base.add(glow);
+      lit = color.add(glow);
     }
     const sat = this.saturation, vig = this.vignette;
     const graded = Fn(() => {

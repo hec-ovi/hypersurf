@@ -13,7 +13,7 @@ import { ChaseCamera } from './camera.js';
 import { World } from './world.js';
 import { TrackPath, makeSample, nodeBeats } from './trackpath.js';
 import { hexToLinear, PALETTE } from './palette.js';
-import { MODES, makeGrid, gridPosition } from '../audio/songmap.js';
+import { makeGrid, gridPosition } from '../audio/songmap.js';
 
 export const DRAW_DISTANCE = 650;
 const REBASE_DISTANCE = 500;
@@ -29,7 +29,6 @@ export class GameView {
     this.path = null;
     this.map = null;
     this.intensity = 0;
-    this.speed01 = 0;
     this._calm = false;
     this.compiled = false;
     this.rebases = 0;
@@ -84,7 +83,7 @@ export class GameView {
     this.world.setBudget(this.gfx.quality);
   }
 
-  /** Calm visuals: no speed blur or aberration, a steadier bloom. */
+  /** Calm visuals: a steadier bloom. */
   set calm(on) {
     this._calm = !!on;
   }
@@ -171,18 +170,9 @@ export class GameView {
     u.trackFwd.value.set(s.fx, s.fy, s.fz);
     u.starPhase.value += I * dt * 0.03;
 
-    // Post: bloom with intensity and bursts; radial speed blur above 60% of
-    // the mode's speed range (AS2's formula with speed for camera bias), off
-    // in loops except for the power-block punch; aberration with I².
+    // Post: bloom with intensity and bursts, swinging less under calm visuals.
     const gfx = this.gfx;
-    const mode = MODES[this.map.mode] || MODES.mono;
-    this.speed01 = Math.min(1, Math.max(0, (s.speed - mode.speedMin) / (mode.speedMax - mode.speedMin)));
-    // Calm visuals: no lens effects at all, and bloom that swings less with I.
     const calm = this._calm;
-    const speedBlur = s.loop ? 0 : Math.min(1.5, Math.max(0, (this.speed01 - 0.6) * 5)) * 0.012;
-    const punch = juice ? juice.lens * 0.018 : 0;
-    gfx.blur.value = calm ? 0 : Math.max(speedBlur, punch) * Math.min(1, swoop * 2);
-    gfx.aberration.value = calm ? 0 : 0.003 * I * I + (juice ? juice.lens * 0.003 : 0);
     gfx.bloomStrength.value = 0.5 + (calm ? 0.25 : 0.5) * I + (juice ? juice.bloom : 0);
     gfx.saturation.value = 1 - 0.6 * (juice ? juice.desaturate : 0);
 

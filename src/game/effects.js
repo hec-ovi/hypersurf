@@ -3,7 +3,7 @@
 // Every bright, full-screen-ish change (beat pulses on the track, bloom
 // bursts on hits, cash-ins and power blocks) asks one shared FlashLimiter
 // first, so the whole game never flashes more than 3 times a second
-// (WCAG 2.3.1). "Calm visuals" turns beat pulses and lens punches off and
+// (WCAG 2.3.1). "Calm visuals" turns beat pulses off and
 // scales bursts down.
 
 /** Allows at most `max` flashes in any window of `window` seconds. */
@@ -37,8 +37,8 @@ export class FlashLimiter {
 
 /**
  * Decaying envelopes for the renderer: beat pulse, bloom burst, FOV punch,
- * ship flash, desaturation, camera kick, lens punch (radial blur at a
- * power block's loop entry), debris flash and the cash-in shockwave. Each
+ * ship flash, desaturation, camera kick, debris flash and the cash-in
+ * shockwave. Each
  * jumps up when triggered and decays exponentially; update() runs once per
  * frame. Budgets from docs/research.md §4: everything but the shockwave's
  * travel is over within about 250 ms.
@@ -53,7 +53,6 @@ export class Juice {
     this.ship = 0; // ship emissive flash 0..1
     this.desaturate = 0; // 0..1
     this.kick = 0; // camera kick, metres
-    this.lens = 0; // radial blur punch 0..1
     this.debris = 0; // air debris flash 0..1
     this.shock = 0; // shockwave brightness 0..1
     this.shockTime = -1e9; // song time the shockwave left the ship
@@ -62,7 +61,7 @@ export class Juice {
 
   reset() {
     this.beat = this.bloom = this.fov = this.ship = this.desaturate = this.kick = 0;
-    this.lens = this.debris = this.shock = 0;
+    this.debris = this.shock = 0;
     this.shockTime = -1e9;
     this._lastBeat = -1;
     this.limiter.reset();
@@ -97,12 +96,11 @@ export class Juice {
   }
 
   /**
-   * A power block: FOV punch and a radial-blur punch into the loop. Calm
-   * visuals keep a small FOV nudge and no lens punch.
+   * A power block: an FOV punch into the loop. Calm visuals keep a small
+   * FOV nudge.
    */
   power() {
     this.fov = this.calm ? 3 : 8;
-    this.lens = this.calm ? 0 : 1;
     this.debris = this.calm ? 0.35 : 1;
   }
 
@@ -130,7 +128,6 @@ export class Juice {
     this.ship *= Math.exp(-dt / 0.08);
     this.desaturate *= Math.exp(-dt / 0.15);
     this.kick *= Math.exp(-dt / 0.1);
-    this.lens *= Math.exp(-dt / 0.35);
     this.debris *= Math.exp(-dt / 0.12);
     this.shock *= Math.exp(-dt / 0.45);
   }
