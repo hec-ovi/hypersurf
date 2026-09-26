@@ -19,7 +19,7 @@ import { Analyzer } from './audio/analyzer.js';
 import { SongPlayer, copyChannels, toAudioBuffer } from './audio/player.js';
 import { LEAD_IN, TAIL, makeGrid } from './audio/songmap.js';
 import { Sfx } from './audio/sfx.js';
-import { parseVideoId, YouTubePlayer, STATE as VIDEO } from './live/youtube.js';
+import { parseVideoId, YouTubePlayer, needsPlay, STATE as VIDEO } from './live/youtube.js';
 import { captureSupport, captureTabAudio, stopStream, CAPTURE_MESSAGES } from './live/capture.js';
 import { LiveSession, LiveClock } from './live/session.js';
 import { LiveMap } from './live/livemap.js';
@@ -319,7 +319,7 @@ function playYouTube(input) {
   if (app.view && app.view.gfx.renderer) app.view.resize();
   setState('live');
   // The player loads in the background: Back works meanwhile, and nothing waits on it.
-  const yt = live.yt = new YouTubePlayer(dock.player, id, { onError: onVideoError });
+  const yt = live.yt = new YouTubePlayer(dock.player, id, { onState: onVideoState, onError: onVideoError });
   const current = () => app.live === live;
   yt.create().then(() => {
     if (current() && yt.ready && !yt.error) {
@@ -442,10 +442,11 @@ function finishRun() {
 
 function pause() {
   if (app.state !== 'play') return;
-  if (app.live && app.live.yt) {
-    app.live.wantPlay = false;
-    app.live.yt.pause();
-    app.live.clock.hold();
+  const live = app.live;
+  if (live && live.yt) {
+    if (live.wantPlay) live.yt.pause(); // not when the viewer already paused it
+    live.wantPlay = false;
+    live.clock.hold();
   } else app.player.pause().catch(() => {});
   setState('paused');
   $('resume-btn').focus({ preventScroll: true });
@@ -605,7 +606,7 @@ function liveTime() {
     else if (live.clock.time() >= -0.3) live.clock.hold();
     // playVideo may be refused while the player is off screen; try again each second.
     const now = performance.now();
-    if (live.wantPlay && vc.state !== VIDEO.PLAYING && vc.state !== VIDEO.BUFFERING && vc.state !== VIDEO.ENDED && now - live.playTry > 1000) {
+    if (live.wantPlay && needsPlay(vc.state) && now - live.playTry > 1000) {
       live.playTry = now;
       yt.play();
     }
@@ -648,6 +649,14 @@ function onShareEnded() {
   live.session = live.stream = null;
   dock.status('Sharing stopped. Press Start to share the tab again.');
   dock.canStart(true);
+}
+
+/** The viewer paused the video from its own controls: pause the run with it, never restart the video. */
+function onVideoState(state) {
+  const live = app.live;
+  if (!live || state !== VIDEO.PAUSED || !live.wantPlay) return;
+  live.wantPlay = false;
+  pause();
 }
 
 function onVideoError(code, text) {

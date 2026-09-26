@@ -42,6 +42,15 @@ export function parseVideoId(input) {
 /** Player states (YT.PlayerState). */
 export const STATE = Object.freeze({ UNSTARTED: -1, ENDED: 0, PLAYING: 1, PAUSED: 2, BUFFERING: 3, CUED: 5 });
 
+/**
+ * Whether a run that wants the video playing should ask again. playVideo is
+ * refused while the player is off screen (or not ready), which leaves it
+ * unstarted or cued. A pause is the viewer's own choice and is never undone.
+ */
+export function needsPlay(state) {
+  return state === STATE.UNSTARTED || state === STATE.CUED;
+}
+
 const ERRORS = {
   2: 'That video ID is not valid. Check the link and try again.',
   5: 'The YouTube player could not play this video here. Try another video, or reload the page.',

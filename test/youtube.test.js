@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseVideoId, errorMessage, VideoClock, STATE } from '../src/live/youtube.js';
+import { parseVideoId, errorMessage, VideoClock, STATE, needsPlay } from '../src/live/youtube.js';
 
 test('video IDs come out of every common link shape', () => {
   const id = 'dQw4w9WgXcQ';
@@ -63,4 +63,10 @@ test('the video clock smooths the time, gates on playing and flags seeks', () =>
   ms += 16.7; c.sample(ms, 10, STATE.PLAYING);
   assert.equal(c.seeks, seeks + 2);
   assert.equal(c.time, 10);
+});
+
+test('only an unstarted or cued video is asked to play again, never a paused one', () => {
+  assert.equal(needsPlay(STATE.UNSTARTED), true);
+  assert.equal(needsPlay(STATE.CUED), true);
+  for (const s of [STATE.PLAYING, STATE.PAUSED, STATE.BUFFERING, STATE.ENDED]) assert.equal(needsPlay(s), false, `state ${s}`);
 });
