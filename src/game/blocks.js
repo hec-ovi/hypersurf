@@ -114,7 +114,10 @@ export class BlockField {
       // Chain span strip under the block, drawn even when the block was taken.
       if (b.spanEnd[i] > tb && type !== BLOCK.POWER) ns = this._span(i, Math.max(tb, t - 0.3), Math.min(b.spanEnd[i], tAhead), lane, sm, si, ns, origin);
       if (taken) continue;
-      if (tb < t - 0.4) continue;
+      // Gone 50 ms after passing the ship: the chase camera, 5-7 m back,
+      // flies through that spot 0.1-0.25 s later, and a missed block there
+      // filled the lower frame.
+      if (tb < t - 0.05) continue;
       this.path.sample(tb, s);
       const lx = lane * LANE_WIDTH;
       if (type === BLOCK.POWER) {
