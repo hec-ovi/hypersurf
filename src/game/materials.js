@@ -7,7 +7,7 @@
 import * as THREE from 'three/webgpu';
 import {
   attribute, uniform, uniformArray, vec3, vec4, float, int, abs, max, min, mix, smoothstep, fract, exp, pow, dot, normalize,
-  fwidth, saturate, step, sin, cos, floor, length, cross, positionGeometry, normalView, positionViewDirection, cameraPosition, Fn,
+  fwidth, saturate, step, sin, cos, floor, length, cross, positionGeometry, positionWorld, normalView, positionViewDirection, cameraPosition, Fn,
 } from 'three/tsl';
 import { hexToLinear, PALETTE } from './palette.js';
 
@@ -305,6 +305,37 @@ export function debrisMaterial(u, offset, volume) {
     const twinkle = sin(seed.w.mul(40).add(u.time.mul(3))).mul(0.3).add(0.7);
     const c = u.trackColor.mul(0.35).add(vec3(u.debrisFlash.mul(2.5)));
     return c.mul(fade).mul(twinkle).mul(u.intensity.mul(0.8).add(0.4));
+  })();
+  return m;
+}
+
+/**
+ * Skywires: a few long strands high over the track, drawn as instanced
+ * camera-facing segments. aA = (start xyz, band), aB = (end xyz, unused).
+ * Each strand glows with its band's level, tinted between the track colour
+ * and the band's place on the gradient. Segments keep about 2 px of width
+ * in the distance so they do not shimmer, and fade out before the draw
+ * distance and right at the camera.
+ */
+export function wireMaterial(u, lut, far) {
+  const m = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false });
+  const a = attribute('aA', 'vec4');
+  const b = attribute('aB', 'vec4');
+  m.positionNode = Fn(() => {
+    const g = positionGeometry; // unit quad: x across, y along, both in [-0.5, 0.5]
+    const p = mix(a.xyz, b.xyz, g.y.add(0.5));
+    const toCam = cameraPosition.sub(p);
+    const across = normalize(cross(b.xyz.sub(a.xyz), toCam));
+    const width = max(0.18, length(toCam).mul(0.0028));
+    return p.add(across.mul(g.x.mul(width)));
+  })();
+  m.colorNode = Fn(() => {
+    const band = int(a.w);
+    const level = u.bands.element(band);
+    const col = mix(u.trackColor, lut.element(band), 0.5);
+    const d = length(cameraPosition.sub(positionWorld));
+    const fade = float(1).sub(smoothstep(far * 0.55, far, d)).mul(smoothstep(6, 30, d));
+    return col.mul(level.mul(2).add(0.25)).mul(fade);
   })();
   return m;
 }

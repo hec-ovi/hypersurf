@@ -10,10 +10,12 @@
 //            flashing on the beat
 //   debris   4k air particles (1k on the low tier) in a wrap-around volume
 //            around the camera; they streak with speed and flash on hits
+//   wires    six skywires high over the track, three bands a side, that
+//            glow with their band's level (one instanced mesh of segments)
 
 import * as THREE from 'three/webgpu';
 import { uniform, uniformArray } from 'three/tsl';
-import { skyMaterial, pillarMaterial, ringMaterial, debrisMaterial } from './materials.js';
+import { skyMaterial, pillarMaterial, ringMaterial, debrisMaterial, wireMaterial } from './materials.js';
 import { gradientAt } from './palette.js';
 import { mulberry32 } from '../audio/random.js';
 import { ringNodes } from './trackpath.js';
@@ -29,6 +31,15 @@ const RING_CAP = 64;
 const RING_INNER = 10.5;
 const RING_WIDTH = 0.45;
 const RING_LIFT = 2.2; // ring centre above the track surface
+
+// Skywires: [lateral m, height m above the track, band] per strand. They
+// sit inside the pillars' 60 m clearance, above the camera's usual view of
+// the near track, so they read as strands in the sky toward the horizon.
+const WIRES = [[-16, 22, 2], [16, 22, 6], [-30, 34, 9], [30, 34, 12], [-46, 27, 4], [46, 27, 14]];
+const WIRE_STEP = 8; // nodes per segment, aligned to the node grid so wires do not crawl
+const WIRE_SEGS = 104; // per wire: covers the draw distance at the slowest speed
+const WIRE_FAR = 640;
+const WIRE_SMOOTH = 45; // nodes either side averaged into the wires' path
 
 const DEBRIS_MAX = 4096;
 const DEBRIS_VOLUME = 110; // metres per side of the wrap-around cube
@@ -60,7 +71,8 @@ export class World {
       gradientAt(b / 15, rgb);
       bandColours.push(new THREE.Color(rgb[0], rgb[1], rgb[2]));
     }
-    this.pillars = new THREE.Mesh(g, pillarMaterial(uniforms, uniformArray(bandColours, 'color')));
+    const lut = uniformArray(bandColours, 'color');
+    this.pillars = new THREE.Mesh(g, pillarMaterial(uniforms, lut));
     this.pillars.frustumCulled = false;
     scene.add(this.pillars);
     this.slotOf = new Int32Array(RING).fill(-1);
@@ -94,6 +106,22 @@ export class World {
     this.debris.renderOrder = 2;
     scene.add(this.debris);
 
+    // --- skywires ---
+    const wq = new THREE.PlaneGeometry(1, 1);
+    const wg = new THREE.InstancedBufferGeometry();
+    wg.index = wq.index;
+    wg.setAttribute('position', wq.attributes.position);
+    const nw = WIRES.length * WIRE_SEGS;
+    this.wireA = new THREE.InstancedBufferAttribute(new Float32Array(nw * 4), 4).setUsage(THREE.DynamicDrawUsage);
+    this.wireB = new THREE.InstancedBufferAttribute(new Float32Array(nw * 4), 4).setUsage(THREE.DynamicDrawUsage);
+    wg.setAttribute('aA', this.wireA);
+    wg.setAttribute('aB', this.wireB);
+    wg.instanceCount = 0;
+    this.wires = new THREE.Mesh(wg, wireMaterial(uniforms, lut, WIRE_FAR));
+    this.wires.frustumCulled = false;
+    this.wires.renderOrder = 1;
+    scene.add(this.wires);
+
     this.map = null;
   }
 
@@ -105,6 +133,52 @@ export class World {
     this.levels.fill(0);
     this.ringNodes = ringNodes(map.nodes);
     this.rings.count = 0;
+    this._skyPath(map.nodes);
+  }
+
+  /**
+   * The path the skywires follow: the track's nodes, with every loop
+   * bridged by a straight chord (a plain loop pitches the track through a
+   * full circle, which would tie the wires in a knot), and a horizontal
+   * right vector per node.
+   */
+  _skyPath(nd) {
+    const n = nd.count;
+    const P = (this.skyPos = new Float64Array(n * 3));
+    const R = (this.skyRight = new Float32Array(n * 2));
+    P.set(nd.pos.subarray(0, n * 3));
+    for (let k = 0; k < n; k++) {
+      const fx = nd.fwd[k * 3], fz = nd.fwd[k * 3 + 2], fl = Math.hypot(fx, fz) || 1;
+      R[k * 2] = -fz / fl;
+      R[k * 2 + 1] = fx / fl;
+    }
+    for (let k = 0; k < n; k++) {
+      if (!nd.loop[k]) continue;
+      const a = Math.max(0, k - 1);
+      let b = k;
+      while (b < n - 1 && nd.loop[b]) b++;
+      // Right turns smoothly from the loop's entry to its exit (the chord
+      // itself is short and skewed by the loop's sideways shift).
+      for (let j = a + 1; j < b; j++) {
+        const f = (j - a) / (b - a);
+        for (let c = 0; c < 3; c++) P[j * 3 + c] = P[a * 3 + c] + (P[b * 3 + c] - P[a * 3 + c]) * f;
+        const rx = R[a * 2] + (R[b * 2] - R[a * 2]) * f, rz = R[a * 2 + 1] + (R[b * 2 + 1] - R[a * 2 + 1]) * f;
+        const rl = Math.hypot(rx, rz) || 1;
+        R[j * 2] = rx / rl;
+        R[j * 2 + 1] = rz / rl;
+      }
+      k = b;
+    }
+    // A moving average over ±WIRE_SMOOTH nodes: a loop still leaves a
+    // steep step in height (the track keeps falling while it circles), and
+    // the sky should drift, not follow every dip of the road.
+    smoothRows(P, n, 3, WIRE_SMOOTH);
+    smoothRows(R, n, 2, WIRE_SMOOTH);
+    for (let k = 0; k < n; k++) {
+      const rl = Math.hypot(R[k * 2], R[k * 2 + 1]) || 1;
+      R[k * 2] /= rl;
+      R[k * 2 + 1] /= rl;
+    }
   }
 
   /** Instance budgets for a quality tier. */
@@ -129,6 +203,7 @@ export class World {
     if (!map) return;
     this._levels(t, dt);
     this._rings(t, tAhead, origin);
+    this._wires(nodeIndex, tAhead, origin);
     const nodes = map.nodes;
     const slots = Math.floor((nodes.count - 1) / NODES_PER_SLOT);
     const j0 = Math.max(0, Math.floor(nodeIndex / NODES_PER_SLOT) - 2);
@@ -198,6 +273,43 @@ export class World {
     markRange(this.ringInst, n);
   }
 
+  /**
+   * Skywire segments from just behind the ship to the draw distance, on
+   * nodes aligned to WIRE_STEP, along the loop-free sky path. Wires hang
+   * in world up, not the track's up, so corkscrews do not twist the sky,
+   * and sway gently along their length.
+   */
+  _wires(nodeIndex, tAhead, origin) {
+    const nd = this.map.nodes, n = nd.count, P = this.skyPos, R = this.skyRight;
+    const A = this.wireA.array, B = this.wireB.array;
+    const k0 = Math.max(0, Math.floor((nodeIndex - WIRE_STEP) / WIRE_STEP) * WIRE_STEP);
+    const kEnd = Math.min(n - 1, Math.ceil((tAhead - nd.t0) * nd.rate));
+    let segs = Math.floor((kEnd - k0) / WIRE_STEP);
+    if (segs > WIRE_SEGS) segs = WIRE_SEGS;
+    if (segs < 1) {
+      this.wires.geometry.instanceCount = 0;
+      return;
+    }
+    let i = 0;
+    for (let w = 0; w < WIRES.length; w++) {
+      const lat = WIRES[w][0], lift = WIRES[w][1], band = WIRES[w][2];
+      for (let s = 0; s <= segs; s++) {
+        const k = k0 + s * WIRE_STEP;
+        const rx = R[k * 2], rz = R[k * 2 + 1];
+        const sway = 2.5 * Math.sin(k * 0.013 + w * 1.7);
+        const x = P[k * 3] + rx * lat - origin.x;
+        const y = P[k * 3 + 1] + lift + sway - origin.y;
+        const z = P[k * 3 + 2] + rz * lat - origin.z;
+        // Point s ends segment s − 1 and starts segment s.
+        if (s > 0) { const o = (i - 1) * 4; B[o] = x; B[o + 1] = y; B[o + 2] = z; B[o + 3] = 1; }
+        if (s < segs) { const o = i * 4; A[o] = x; A[o + 1] = y; A[o + 2] = z; A[o + 3] = band; i++; }
+      }
+    }
+    this.wires.geometry.instanceCount = i;
+    markRange(this.wireA, i);
+    markRange(this.wireB, i);
+  }
+
   _writeSlot(j, r, origin) {
     const nd = this.map.nodes, k = j * NODES_PER_SLOT;
     const P = this.aPos.array, S = this.aSize.array;
@@ -244,5 +356,15 @@ export class World {
       if (dx * dx + dz * dz < lim * lim) return false;
     }
     return true;
+  }
+}
+
+/** In-place box filter over ±w rows of an n × dim row-major array (edges clamp the window). */
+function smoothRows(a, n, dim, w) {
+  const sum = new Float64Array((n + 1) * dim);
+  for (let k = 0; k < n; k++) for (let c = 0; c < dim; c++) sum[(k + 1) * dim + c] = sum[k * dim + c] + a[k * dim + c];
+  for (let k = 0; k < n; k++) {
+    const lo = Math.max(0, k - w), hi = Math.min(n - 1, k + w), m = hi - lo + 1;
+    for (let c = 0; c < dim; c++) a[k * dim + c] = (sum[(hi + 1) * dim + c] - sum[lo * dim + c]) / m;
   }
 }
