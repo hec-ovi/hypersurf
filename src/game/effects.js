@@ -81,11 +81,18 @@ export class Juice {
     if (this.limiter.tryFlash(now)) this.bloom = Math.min(1.2, this.bloom + a);
   }
 
-  /** A colour block was hit: ship flash, camera kick, debris flash. */
-  hit() {
+  /**
+   * A colour block was hit at song time `now`: ship flash and camera kick
+   * always (small, local), and a bloom burst (+0.25) with the air-debris
+   * flash when the limiter allows one; otherwise the debris only glints.
+   */
+  hit(now) {
     this.ship = 1;
     this.kick = 0.08;
-    this.debris = this.calm ? 0.35 : 1;
+    if (this.limiter.tryFlash(now)) {
+      this.bloom = Math.min(1.2, this.bloom + (this.calm ? 0.075 : 0.25));
+      this.debris = this.calm ? 0.35 : 1;
+    } else this.debris = Math.max(this.debris, 0.25);
   }
 
   /** A power block: FOV punch and a radial-blur punch into the loop. */

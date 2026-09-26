@@ -77,9 +77,10 @@ export function trackMaterial(u) {
     // A soft band 0.5 s ahead of the ship marks where blocks are about to be hit.
     const dtF = tNode.sub(u.time.add(0.5)).mul(10);
     const future = exp(dtF.mul(dtF).negate());
-    // Cash-in shockwave: a band racing ahead of the ship (4 s of track per second).
-    const front = u.shockTime.add(u.time.sub(u.shockTime).mul(4));
-    const dS = tNode.sub(front).mul(5);
+    // Cash-in shockwave: a narrow band that leaves 0.2 s ahead of the ship
+    // and races down the track (4 s of track per second), riding the lines.
+    const front = u.shockTime.add(0.2).add(u.time.sub(u.shockTime).mul(4));
+    const dS = tNode.sub(front).mul(14);
     const shock = exp(dS.mul(dS).negate()).mul(u.shock).mul(step(u.shockTime, tNode));
     // Loop foreshadowing: a rainbow chase, pre-lit at 30% of full glow.
     const chase = fract(beatPos.mul(2).sub(u.time.mul(1.5)));
@@ -96,7 +97,7 @@ export function trackMaterial(u) {
       .add(col.mul(chev.mul(pulse.mul(1.5).add(0.3))))
       .add(col.mul(rung.mul(0.08).mul(pulse.add(1))))
       .add(col.mul(future.mul(0.15)))
-      .add(vec3(1).add(col).mul(shock.mul(lines.mul(3).add(0.35))));
+      .add(vec3(1).add(col).mul(shock.mul(lines.mul(3).add(0.06))));
     // Rails: a dim body with a neon tube along the top face (lateral 5.05;
     // the vertical faces sit at 4.7 and 5.4, so only the top carries it).
     // Research §4's gradient × (1.5 + 2.5·I) goes into the tube; spread over

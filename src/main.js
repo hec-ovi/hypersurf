@@ -485,8 +485,7 @@ function onEvent(ev) {
   switch (ev.type) {
     case EVENT.HIT:
       stats.hits++;
-      juice.hit();
-      juice.burst(0.25, now);
+      juice.hit(now);
       sfx.hit(ev.lane + 1, ev.count, ev.time);
       view.blocks.shatter(ev.block, view.path.sample(ev.time, app.hitSample), performance.now() / 1000);
       break;

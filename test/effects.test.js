@@ -49,11 +49,23 @@ test('cash-in shockwaves share the limiter and dim instead of vanishing', () => 
 
 test('impact envelopes are over within about 250 ms', () => {
   const j = new Juice();
-  j.hit();
+  j.hit(0);
   j.power();
   j.grey();
   j.burst(0.6, 0);
   for (let k = 0; k < 15; k++) j.update(1 / 60);
   for (const key of ['ship', 'kick', 'debris', 'desaturate', 'bloom']) assert.ok(j[key] < 0.2 * (key === 'kick' ? 0.08 : 1), `${key} ${j[key]}`);
   assert.ok(j.lens < 0.5 && j.fov < 4, 'the power punch has faded well down');
+});
+
+test('hits flash the debris only when the limiter allows', () => {
+  const j = new Juice();
+  let flashes = 0;
+  for (let k = 0; k < 20; k++) { // 20 hits in one second
+    j.debris = 0;
+    j.hit(k * 0.05);
+    if (j.debris > 0.5) flashes++;
+    assert.equal(j.ship, 1, 'the ship always flashes');
+  }
+  assert.equal(flashes, 3);
 });
