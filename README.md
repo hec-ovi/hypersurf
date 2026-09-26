@@ -23,6 +23,15 @@ Catch three or more touching blocks of one colour to make a match. Grey blocks t
 - **Audio file:** MP3, WAV, OGG, FLAC or M4A. The whole song is analysed on your device and never uploaded.
 - **YouTube:** paste a link and press Start, then share this tab with its audio in the prompt. This works in Chrome, Edge or Brave on a desktop computer. The game analyses the tab's sound live to find the beat; the audio is never recorded or stored. A **Nyan Cat** chip fills in the official upload.
 
+## Special levels
+
+**Special levels** in the menu holds hand-tuned rides, each with its own profile on top of the normal analysis (`src/audio/levels.js`). They use the rules of the mode you picked.
+
+- **Hypersurf demo:** the synthesised demo song, exactly as it plays from the menu.
+- **Nyan Cat:** super fast, with a top speed of about 1.7× Mono. The speed rushes and slows with the runs of chiptune notes: dense passages plunge downhill, sparse ones climb. A loop, corkscrew, double corkscrew, twist or flip comes every few seconds on the song's bar lines. The track is a rainbow and you ride the Nyan vehicle. The ride starts where the music kicks in, after the short intro.
+
+The Nyan Cat song is **not included**. The level needs your own copy of the song (MP3, WAV, OGG, FLAC or M4A). Pick or drop it once: it is analysed on your device and kept only in this browser (IndexedDB), so later plays are one click. Nothing is uploaded. **Song file** on the levels screen replaces or forgets the stored copy. Without a copy, **Use the YouTube version instead** plays the official upload through the live listen mode (see YouTube above). That mode does not use the level's profile.
+
 ## Modes and vehicles
 
 - **Casual:** slower and sparser, with a longer match timer and safe shoulders.
