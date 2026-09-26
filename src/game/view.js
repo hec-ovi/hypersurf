@@ -64,7 +64,7 @@ export class GameView {
     this.world.setBudget(this.gfx.quality);
   }
 
-  /** Calm visuals: no speed blur punch or aberration, softer everything. */
+  /** Calm visuals: no speed blur or aberration, a steadier bloom. */
   set calm(on) {
     this._calm = !!on;
   }
@@ -149,12 +149,13 @@ export class GameView {
     const gfx = this.gfx;
     const mode = MODES[this.map.mode] || MODES.mono;
     this.speed01 = Math.min(1, Math.max(0, (s.speed - mode.speedMin) / (mode.speedMax - mode.speedMin)));
-    const calm = this._calm ? 0.4 : 1;
+    // Calm visuals: no lens effects at all, and bloom that swings less with I.
+    const calm = this._calm;
     const speedBlur = s.loop ? 0 : Math.min(1.5, Math.max(0, (this.speed01 - 0.6) * 5)) * 0.012;
     const punch = juice ? juice.lens * 0.018 : 0;
-    gfx.blur.value = Math.max(speedBlur, punch) * calm * Math.min(1, swoop * 2);
-    gfx.aberration.value = this._calm ? 0 : 0.003 * I * I + (juice ? juice.lens * 0.003 : 0);
-    gfx.bloomStrength.value = 0.5 + 0.5 * I + (juice ? juice.bloom : 0);
+    gfx.blur.value = calm ? 0 : Math.max(speedBlur, punch) * Math.min(1, swoop * 2);
+    gfx.aberration.value = calm ? 0 : 0.003 * I * I + (juice ? juice.lens * 0.003 : 0);
+    gfx.bloomStrength.value = 0.5 + (calm ? 0.25 : 0.5) * I + (juice ? juice.bloom : 0);
     gfx.saturation.value = 1 - 0.6 * (juice ? juice.desaturate : 0);
 
     const tAhead = this.path.timeAtDistance(s.dist + DRAW_DISTANCE);

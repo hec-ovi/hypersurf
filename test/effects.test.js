@@ -69,3 +69,15 @@ test('hits flash the debris only when the limiter allows', () => {
   }
   assert.equal(flashes, 3);
 });
+
+test('calm visuals keep power blocks free of lens punches', () => {
+  const j = new Juice();
+  j.calm = true;
+  j.power();
+  assert.equal(j.lens, 0);
+  assert.ok(j.fov > 0 && j.fov <= 3, `calm fov punch ${j.fov}`);
+  const full = new Juice();
+  full.power();
+  assert.equal(full.lens, 1);
+  assert.equal(full.fov, 8);
+});

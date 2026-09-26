@@ -113,7 +113,9 @@ window.__hypersurf = {
 // --- settings -------------------------------------------------------------------
 
 function loadSettings() {
-  const defaults = { latency: 0, calm: false, quality: 'high', mode: 'mono', sfx: true };
+  // Calm visuals start on for people who ask their system for reduced motion.
+  const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const defaults = { latency: 0, calm: reduced, quality: 'high', mode: 'mono', sfx: true };
   try {
     const raw = storage && storage.getItem(SETTINGS_KEY);
     const v = raw ? JSON.parse(raw) : {};

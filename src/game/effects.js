@@ -3,7 +3,8 @@
 // Every bright, full-screen-ish change (beat pulses on the track, bloom
 // bursts on hits, cash-ins and power blocks) asks one shared FlashLimiter
 // first, so the whole game never flashes more than 3 times a second
-// (WCAG 2.3.1). "Calm visuals" turns beat pulses off and scales bursts down.
+// (WCAG 2.3.1). "Calm visuals" turns beat pulses and lens punches off and
+// scales bursts down.
 
 /** Allows at most `max` flashes in any window of `window` seconds. */
 export class FlashLimiter {
@@ -95,10 +96,13 @@ export class Juice {
     } else this.debris = Math.max(this.debris, 0.25);
   }
 
-  /** A power block: FOV punch and a radial-blur punch into the loop. */
+  /**
+   * A power block: FOV punch and a radial-blur punch into the loop. Calm
+   * visuals keep a small FOV nudge and no lens punch.
+   */
   power() {
-    this.fov = 8;
-    this.lens = this.calm ? 0.4 : 1;
+    this.fov = this.calm ? 3 : 8;
+    this.lens = this.calm ? 0 : 1;
     this.debris = this.calm ? 0.35 : 1;
   }
 
