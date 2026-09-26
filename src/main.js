@@ -57,6 +57,7 @@ const app = {
   autopilot: null,
   busy: false,
   hitSample: makeSample(),
+  frozen: null, // debug: song time the view is held at
 };
 
 /** Stats for automated checks and the ?debug=1 overlay. Mutated in place. */
@@ -100,6 +101,12 @@ window.__hypersurf = {
     app.autopilotOn = !!on;
     app.autopilot = on && app.map ? createAutopilot(app.map.blocks) : null;
   },
+  /** Debug only: the app itself, for console experiments. */
+  get app() { return DEBUG ? app : null; },
+  /** Debug only: hold the view at song time t (settled), for screenshots. freeze(null) lets go. */
+  freeze(t, opts) { return DEBUG ? freezeAt(t, opts) : false; },
+  /** Debug only: render frames back to back with a GPU sync after each; returns timings. */
+  bench(opts) { return DEBUG ? bench(opts) : null; },
 };
 
 // --- settings -------------------------------------------------------------------
@@ -306,6 +313,7 @@ async function startSong(mode) {
 async function beginRun() {
   const { view, map, mode } = app;
   app.player.stop();
+  app.frozen = null;
   app.rules = new RulesEngine(map.blocks, mode);
   app.ship.reset(0);
   app.juice.reset();
@@ -388,11 +396,12 @@ function frame() {
   const live = app.state === 'play' || app.state === 'paused' || app.state === 'results';
   if (!live || !view || !view.map) return;
 
-  if (app.state === 'play') tick(dt);
+  const frozen = app.frozen !== null;
+  if (app.state === 'play' && !frozen) tick(dt);
   const swoop = Math.min(1, (app.viewT - app.runStart) / SWOOP);
-  view.frame(app.viewT, app.state === 'play' ? dt : 0, t0 / 1000, app.ship.x, app.ship.v, app.rules.state, app.juice, swoop);
+  view.frame(app.viewT, app.state === 'play' && !frozen ? dt : 0, frozen ? app.viewT : t0 / 1000, app.ship.x, app.ship.v, app.rules.state, app.juice, swoop);
   view.render();
-  if (app.state === 'play') {
+  if (app.state === 'play' && !frozen) {
     view.gfx.adapt(frameMs, t0);
     if (view.gfx.governor.lowerRequested) lowerQuality();
   }
@@ -492,6 +501,97 @@ function onEvent(ev) {
       break;
   }
   app.hud.event(ev);
+}
+
+// --- debug hooks ------------------------------------------------------------------
+
+/**
+ * Hold the view at song time t, for screenshots of exact moments: the song
+ * pauses, the camera springs settle over `settle` seconds of 60 Hz frames
+ * flown up to t with the autopilot steering, and later frames redraw that
+ * moment. Juice can be forced for the shot: { beat, shock, lens, hit }.
+ */
+function freezeAt(t, { settle = 1.5, beat = 0, shock = 0, lens = 0, hit = 0, x = null } = {}) {
+  const view = app.view;
+  if (t === null) {
+    app.frozen = null;
+    if (app.state === 'play') app.player.resume().catch(() => {});
+    app.lastFrame = performance.now();
+    return true;
+  }
+  if (!view || !view.map || app.state !== 'play') return false;
+  app.player.pause().catch(() => {});
+  const pilot = createAutopilot(app.map.blocks);
+  const n = Math.round(settle * 60);
+  app.juice.reset();
+  app.ship.reset(0);
+  for (let i = 0; i <= n; i++) {
+    const ti = t - (n - i) / 60;
+    app.ship.step(1 / 60, x === null ? pilot(ti) : x);
+    view.frame(ti, 1 / 60, ti, app.ship.x, app.ship.v, app.rules.state, app.juice, 1);
+  }
+  app.juice.beat = beat;
+  app.juice.shock = shock;
+  app.juice.shockTime = t - 0.25;
+  app.juice.lens = lens;
+  app.juice.debris = hit;
+  app.juice.ship = hit;
+  app.viewT = t;
+  app.runStart = t - SWOOP;
+  app.frozen = t;
+  return true;
+}
+
+/**
+ * Render `frames` frames from song time `from`, `dt` apart, synchronously,
+ * forcing the GPU to finish each one (a 1-pixel readback on WebGL2, queue
+ * completion on WebGPU). Measures real frame cost even in a background tab
+ * where animation frames are throttled.
+ */
+async function bench({ from = app.viewT, frames = 300, dt = 1 / 60 } = {}) {
+  const view = app.view;
+  if (!view || !view.map) return null;
+  const was = app.frozen;
+  app.frozen = from; // keep the animation loop from interleaving
+  const backend = view.gfx.renderer.backend;
+  const gl = backend.gl || null, device = backend.device || null;
+  const px = new Uint8Array(4);
+  const total = new Float64Array(frames), cpu = new Float64Array(frames);
+  const pilot = createAutopilot(app.map.blocks);
+  const heap0 = performance.memory ? performance.memory.usedJSHeapSize : 0;
+  let draws = 0, tris = 0;
+  for (let i = 0; i < frames; i++) {
+    const t = from + i * dt;
+    const a = performance.now();
+    app.ship.step(dt, pilot(t));
+    app.juice.update(dt);
+    view.frame(t, dt, t, app.ship.x, app.ship.v, app.rules.state, app.juice, 1);
+    view.render();
+    const b = performance.now();
+    if (gl) {
+      const fb = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+    } else if (device) await device.queue.onSubmittedWorkDone();
+    total[i] = performance.now() - a;
+    cpu[i] = b - a;
+    draws = Math.max(draws, view.gfx.info.drawCalls);
+    tris = Math.max(tris, view.gfx.info.triangles);
+  }
+  const heap1 = performance.memory ? performance.memory.usedJSHeapSize : 0;
+  app.frozen = was;
+  app.viewT = was === null ? app.viewT : was;
+  const sorted = Float64Array.from(total).sort(), cs = Float64Array.from(cpu).sort();
+  const mean = (arr) => arr.reduce((x, y) => x + y, 0) / arr.length;
+  const r2 = (v) => Math.round(v * 100) / 100;
+  return {
+    backend: view.gfx.backend, quality: view.gfx.qualityName, pixelRatio: view.gfx.pixelRatio(),
+    width: view.gfx.width, height: view.gfx.height, frames,
+    frameMs: { mean: r2(mean(total)), p50: r2(sorted[frames >> 1]), p95: r2(sorted[Math.floor(frames * 0.95)]), max: r2(sorted[frames - 1]) },
+    cpuMs: { mean: r2(mean(cpu)), p95: r2(cs[Math.floor(frames * 0.95)]) },
+    drawCalls: draws, triangles: tris, heapDeltaKB: Math.round((heap1 - heap0) / 1024),
+  };
 }
 
 // --- debug overlay ----------------------------------------------------------------
