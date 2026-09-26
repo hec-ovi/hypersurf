@@ -208,10 +208,13 @@ export function skyMaterial(u) {
 
 /**
  * Skyline pillars, instanced without matrices: aPos = (x, y, z, band) and
- * aSize = (width, height, depth below, phase). Heights react to the band's
- * level (× (1 + 2.5·E)); tops and vertical edges glow in the track colour.
+ * aSize = (width, height, depth below, seed). Heights react to the band's
+ * level (× (1 + 2.5·E)). A quiet pillar is a dark silhouette with a few
+ * lit windows; as its band gets loud, its top and vertical edges light up
+ * in the track colour, tinted a little toward the band's own place on the
+ * gradient so the skyline reads as a spectrum.
  */
-export function pillarMaterial(u) {
+export function pillarMaterial(u, lut) {
   const m = new THREE.MeshBasicNodeMaterial();
   const pos = attribute('aPos', 'vec4');
   const size = attribute('aSize', 'vec4');
@@ -225,12 +228,68 @@ export function pillarMaterial(u) {
   m.colorNode = Fn(() => {
     const g = positionGeometry;
     const ax = abs(g.x).mul(2), az = abs(g.z).mul(2);
-    const edge = smoothstep(0.86, 0.98, min(ax, az));
+    const edge = smoothstep(0.9, 0.99, min(ax, az));
     const top = smoothstep(0.985, 1, g.y);
-    const glow = top.mul(level.mul(2.5).add(0.6)).add(edge.mul(level.mul(0.8).add(0.08)));
-    // A faint wash up the upper body so pillars read as buildings, not floating tops.
-    const body = smoothstep(0.6, 1, g.y).mul(0.022);
-    return vec3(0.004, 0.005, 0.01).add(u.trackColor.mul(glow.add(body)));
+    const bandCol = lut.element(int(pos.w));
+    const tintCol = mix(u.trackColor, bandCol, 0.35);
+    // Windows: a 2 m × 3 m grid on the side faces, ~12% lit, per-pillar seed.
+    const worldY = g.y.mul(size.z.add(height));
+    const across = mix(g.x, g.z, step(ax, az)).add(0.5).mul(size.x);
+    const cellX = floor(across.div(2)), cellY = floor(worldY.div(3));
+    const h = fract(sin(cellX.mul(12.9898).add(cellY.mul(78.233)).add(size.w.mul(437.1))).mul(43758.5453));
+    const inCell = step(0.3, fract(across.div(2))).mul(step(0.35, fract(worldY.div(3))));
+    const side = float(1).sub(top);
+    const windows = step(0.88, h).mul(inCell).mul(side).mul(smoothstep(0.25, 0.95, g.y)).mul(level.mul(0.12).add(0.035));
+    const glow = top.mul(level.mul(2.8).add(0.1)).add(edge.mul(level.mul(0.9).add(0.03)));
+    const body = smoothstep(0.55, 1, g.y).mul(0.012);
+    return vec3(0.003, 0.004, 0.008).add(tintCol.mul(glow.add(body).add(windows)));
+  })();
+  return m;
+}
+
+/**
+ * Rings around the track at its most intense nodes: flat annuli, additive,
+ * coloured by the node's gradient colour (aInst.xyz) and flashing on the
+ * (flash-limited) beat pulse. aInst.w fades a ring in at the far end.
+ */
+export function ringMaterial(u, inner, width) {
+  const m = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide });
+  const inst = attribute('aInst', 'vec4');
+  m.colorNode = Fn(() => {
+    // Brightest along the middle of the band, soft toward its edges.
+    const x = length(positionGeometry.xy).sub(inner).div(width);
+    const prof = float(1).sub(abs(x.mul(2).sub(1)));
+    return inst.xyz.mul(u.beat.mul(1.6).add(0.7)).mul(inst.w).mul(prof.mul(prof).mul(0.8).add(0.2));
+  })();
+  return m;
+}
+
+/**
+ * Air debris: instanced quads in a wrap-around volume centred on the
+ * camera. aSeed = (unit position, phase). Particles are fixed in the world
+ * (the volume wraps using the camera's float64 position mod V, passed as
+ * `offset`), streak along the track as speed rises, and flash on hits.
+ */
+export function debrisMaterial(u, offset, volume) {
+  const m = new THREE.MeshBasicNodeMaterial({ transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+  const seed = attribute('aSeed', 'vec4');
+  const local = fract(seed.xyz.sub(offset)).sub(0.5).mul(volume);
+  const dist = length(local);
+  m.positionNode = Fn(() => {
+    const corner = positionGeometry.xy; // quad corners in [-0.5, 0.5]
+    const centre = cameraPosition.add(local);
+    const along = u.trackFwd;
+    const toCam = normalize(cameraPosition.sub(centre));
+    const across = normalize(cross(along, toCam));
+    const len = u.speed.mul(0.018).add(0.12);
+    return centre.add(along.mul(corner.y.mul(len))).add(across.mul(corner.x.mul(0.07)));
+  })();
+  m.colorNode = Fn(() => {
+    // Fade in from the far edge of the volume and out right at the camera.
+    const fade = smoothstep(4, 12, dist).mul(float(1).sub(smoothstep(volume * 0.3, volume * 0.5, dist)));
+    const twinkle = sin(seed.w.mul(40).add(u.time.mul(3))).mul(0.3).add(0.7);
+    const c = u.trackColor.mul(0.35).add(vec3(u.debrisFlash.mul(2.5)));
+    return c.mul(fade).mul(twinkle).mul(u.intensity.mul(0.8).add(0.4));
   })();
   return m;
 }

@@ -146,3 +146,24 @@ export function nodeBeats(map) {
   for (let k = 0; k < nd.count; k++) out[k] = gridPosition(grid, nd.t0 + k / nd.rate);
   return out;
 }
+
+/**
+ * Nodes that carry a ring (docs/research.md §4): the most intense
+ * `fraction` of nodes, never below intensity 0.5 (a flat, quiet song gets
+ * none), thinned to at most one every `spacing` nodes. Sorted ascending.
+ */
+export function ringNodes(nodes, fraction = 0.18, spacing = 12) {
+  const n = nodes.count, I = nodes.intensity;
+  if (n === 0) return new Int32Array(0);
+  const sorted = Float32Array.from(I.subarray ? I.subarray(0, n) : I).sort();
+  const threshold = Math.max(0.5, sorted[Math.min(n - 1, Math.floor(n * (1 - fraction)))]);
+  const out = [];
+  let last = -Infinity;
+  for (let k = 0; k < n; k++) {
+    if (I[k] >= threshold && k - last >= spacing) {
+      out.push(k);
+      last = k;
+    }
+  }
+  return Int32Array.from(out);
+}

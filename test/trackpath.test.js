@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { generateDemoSong } from '../src/audio/demo.js';
 import { analyzeAudio } from '../src/audio/analyze.js';
 import { buildSongMap, LOOP } from '../src/audio/songmap.js';
-import { TrackPath, makeSample, catmullRom, planChunks, chunkAt, nodeBeats } from '../src/game/trackpath.js';
+import { TrackPath, makeSample, catmullRom, planChunks, chunkAt, nodeBeats, ringNodes } from '../src/game/trackpath.js';
 
 const demo = generateDemoSong({ sampleRate: 22050 });
 const map = buildSongMap(analyzeAudio(demo.channels, demo.sampleRate), { mode: 'mono', seed: 'demo' });
@@ -101,4 +101,22 @@ test('node beat positions count beats in song time', () => {
   // Over 10 s the grid advances by about 10 / period beats.
   const k0 = Math.round(20 * 30 + 90), k1 = k0 + 300;
   assert.ok(Math.abs(beats[k1] - beats[k0] - 10 / period) < 0.2);
+});
+
+test('rings sit at the most intense nodes, spaced out, and mostly in the drops', () => {
+  const rings = ringNodes(map.nodes);
+  const nd = map.nodes;
+  assert.ok(rings.length > 20, `${rings.length} rings`);
+  for (let i = 1; i < rings.length; i++) assert.ok(rings[i] - rings[i - 1] >= 12);
+  for (const k of rings) assert.ok(nd.intensity[k] >= 0.5);
+  // The demo's drops run 45–75 s and 105–135 s.
+  let inDrops = 0;
+  for (const k of rings) {
+    const t = nd.t0 + k / nd.rate;
+    if ((t > 44 && t < 76) || (t > 104 && t < 136)) inDrops++;
+  }
+  assert.ok(inDrops / rings.length > 0.8, `${inDrops}/${rings.length} in the drops`);
+  // A flat, quiet track gets none.
+  const flat = { count: 100, intensity: new Float32Array(100).fill(0.2) };
+  assert.equal(ringNodes(flat).length, 0);
 });

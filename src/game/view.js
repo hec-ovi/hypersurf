@@ -48,7 +48,7 @@ export class GameView {
     this.track = new TrackMesh(scene, trackMaterial(this.uniforms));
     this.blocks = new BlockField(scene);
     this.ship = new Ship(scene, this.uniforms);
-    this.world = new World(scene, this.uniforms, { pillars: this.gfx.qualityName !== 'low' });
+    this.world = new World(scene, this.uniforms, this.gfx.quality);
     this.chase = new ChaseCamera(camera);
     this.gfx.setScene(scene, camera);
     this.gfx.resize();
@@ -61,7 +61,7 @@ export class GameView {
 
   setQuality(name) {
     this.gfx.setQuality(name);
-    this.world.setPillars(this.gfx.qualityName !== 'low');
+    this.world.setBudget(this.gfx.quality);
   }
 
   /** Calm visuals: no speed blur punch or aberration, softer everything. */
@@ -91,7 +91,7 @@ export class GameView {
 
   /** Compile every pipeline before the swoop, so the first frames do not hitch. */
   async compile(state) {
-    const meshes = [this.blocks.colour, this.blocks.hazard, this.blocks.power, this.blocks.span, this.blocks.shard];
+    const meshes = [this.blocks.colour, this.blocks.hazard, this.blocks.power, this.blocks.span, this.blocks.shard, this.world.rings];
     const counts = meshes.map((m) => m.count);
     for (const m of meshes) m.count = 1;
     this.frame(this.path.t0, 0, 0, 0, 0, state, null, 0);
@@ -162,7 +162,7 @@ export class GameView {
     this.blocks.update(t, tAhead, state, this.origin, wall);
     this.ship.place(s, shipX, vx, this.origin, SHIP_HOVER);
     this.chase.update(dt, s, shipX, vx, I, swoop, juice, this.origin);
-    this.world.update(Math.round(this.path.indexAt(t)), t, dt, this.origin, rebased, this.camera);
+    this.world.update(Math.round(this.path.indexAt(t)), t, tAhead, dt, this.origin, rebased, this.camera);
   }
 
   render() {
