@@ -1,4 +1,4 @@
-// The 3D view of a run: renderer, scene, track, blocks, ship, world and the
+// The 3D view of a run: renderer, scene, track, blocks, vehicle, world and the
 // chase camera, all driven from song time. Positions are computed in
 // float64 and written relative to a floating origin that re-bases every
 // 500 m, so float32 stays precise kilometres down the track.
@@ -8,12 +8,12 @@ import { Renderer } from './render.js';
 import { createUniforms, trackMaterial } from './materials.js';
 import { TrackMesh } from './track.js';
 import { BlockField } from './blocks.js';
-import { Ship } from './ship.js';
+import { createVehicle, vehicleId } from './vehicles/index.js';
 import { ChaseCamera } from './camera.js';
 import { World } from './world.js';
 import { TrackPath, makeSample, nodeBeats } from './trackpath.js';
 import { hexToLinear, PALETTE } from './palette.js';
-import { MODES } from '../audio/songmap.js';
+import { MODES, makeGrid, gridPosition } from '../audio/songmap.js';
 
 export const DRAW_DISTANCE = 650;
 const REBASE_DISTANCE = 500;
@@ -33,6 +33,8 @@ export class GameView {
     this._calm = false;
     this.compiled = false;
     this.rebases = 0;
+    this.vehicleId = vehicleId(options.vehicle);
+    this.beatGrid = null;
   }
 
   async init() {
@@ -47,12 +49,30 @@ export class GameView {
     this.camera = camera;
     this.track = new TrackMesh(scene, trackMaterial(this.uniforms));
     this.blocks = new BlockField(scene);
-    this.ship = new Ship(scene, this.uniforms);
+    this.ship = null;
+    this._makeVehicle();
     this.world = new World(scene, this.uniforms, this.gfx.quality);
     this.chase = new ChaseCamera(camera);
     this.gfx.setScene(scene, camera);
     this.gfx.resize();
     return this;
+  }
+
+  _makeVehicle() {
+    this.ship = createVehicle(this.vehicleId, this.scene, this.uniforms);
+    if ('camera' in this.ship) this.ship.camera = this.camera;
+  }
+
+  /** Swap the vehicle (a look only: the ship's motion and collision do not change). */
+  setVehicle(id) {
+    const next = vehicleId(id);
+    if (next === this.vehicleId) return;
+    this.vehicleId = next;
+    if (!this.ship) return; // not built yet: init() makes this one
+    this.ship.dispose();
+    this._makeVehicle();
+    // Compile its pipelines now rather than on its first frame in play.
+    if (this.compiled) this.gfx.compile().catch(() => {});
   }
 
   get backend() {
@@ -73,6 +93,7 @@ export class GameView {
   load(map) {
     this.map = map;
     this.path = new TrackPath(map.nodes);
+    this.beatGrid = map.live ? null : makeGrid(map.beats, map.bpm, map.duration);
     this.track.load(map, nodeBeats(map));
     this.blocks.load(map, this.path);
     this.world.load(map);
@@ -169,6 +190,8 @@ export class GameView {
     this.track.update(s.dist, this.origin);
     this.blocks.update(t, tAhead, state, this.origin, wall);
     this.ship.place(s, shipX, vx, this.origin, SHIP_HOVER);
+    const beat = map.live ? map.beatAt(t) : gridPosition(this.beatGrid, t);
+    this.ship.update(dt, t, beat - Math.floor(beat), I);
     this.chase.update(dt, s, shipX, vx, I, swoop, juice, this.origin);
     this.world.update(Math.round(this.path.indexAt(t)), t, tAhead, dt, this.origin, rebased, this.camera);
   }

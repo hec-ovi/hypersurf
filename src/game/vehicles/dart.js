@@ -1,8 +1,9 @@
-// The player's ship: a low, wide dart with a glowing thruster. Two meshes
-// (hull and thruster) in one group, placed each frame from the track frame.
+// DART, the original ship: a low, wide dart with a glowing thruster. Two
+// meshes (hull and thruster) in one group, placed each frame from the track
+// frame. Implements the vehicle interface (see index.js).
 
 import * as THREE from 'three/webgpu';
-import { shipMaterial, thrusterMaterial } from './materials.js';
+import { shipMaterial, thrusterMaterial } from '../materials.js';
 
 /** Hull as a flat-shaded dart: nose at -z (forward), wide tail at +z. */
 function hullGeometry() {
@@ -24,8 +25,9 @@ function hullGeometry() {
   return g;
 }
 
-export class Ship {
+export class DartVehicle {
   constructor(scene, uniforms) {
+    this.scene = scene;
     this.group = new THREE.Group();
     this.hull = new THREE.Mesh(hullGeometry(), shipMaterial(uniforms));
     // A slim cone pointing backwards (+z): nozzle at z 0.95, tip at 2.55.
@@ -62,5 +64,16 @@ export class Ship {
     this._m.set(rx, ux, bx, px, ry, uy, by, py, rz, uz, bz, pz, 0, 0, 0, 1);
     this.group.matrix.copy(this._m);
     this.group.matrixWorldNeedsUpdate = true;
+  }
+
+  /** The dart has no animation of its own: its flash and glow come from the shared uniforms. */
+  update() {}
+
+  dispose() {
+    this.scene.remove(this.group);
+    this.hull.geometry.dispose();
+    this.hull.material.dispose();
+    this.thruster.geometry.dispose();
+    this.thruster.material.dispose();
   }
 }
