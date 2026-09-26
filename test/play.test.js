@@ -2,37 +2,15 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateDemoSong } from '../src/audio/demo.js';
 import { analyzeAudio } from '../src/audio/analyze.js';
-import { buildSongMap, BLOCK, MODES } from '../src/audio/songmap.js';
+import { buildSongMap, MODES } from '../src/audio/songmap.js';
 import { RulesEngine, EVENT } from '../src/game/rules.js';
+import { createAutopilot as bot } from '../src/game/autopilot.js';
 
 const demo = generateDemoSong();
 const features = analyzeAudio(demo.channels, demo.sampleRate);
 const maps = Object.fromEntries(Object.keys(MODES).map((mode) => [mode, buildSongMap(features, { mode, seed: 'demo' })]));
 
 const STEP = 1 / 240;
-
-/**
- * A simple bot: steer for the next colour or power block and, if a grey or
- * spike is about to arrive in that lane first, move to the free lane beside it.
- */
-function bot(blocks) {
-  let i = 0;
-  return (t) => {
-    while (i < blocks.count && blocks.time[i] + 0.07 < t) i++;
-    let target = 0, found = false;
-    for (let k = i; k < blocks.count && blocks.time[k] < t + 0.5; k++) {
-      if (blocks.type[k] !== BLOCK.GREY) { target = blocks.lane[k]; found = true; break; }
-    }
-    if (!found) return 0;
-    for (let k = i; k < blocks.count && blocks.time[k] < t + 0.05; k++) {
-      if (blocks.type[k] === BLOCK.GREY && blocks.lane[k] === target && blocks.time[k] + 0.02 >= t) {
-        target = target === 0 ? 1 : 0;
-        break;
-      }
-    }
-    return target * 3;
-  };
-}
 
 function playSong(map, ship) {
   const game = new RulesEngine(map.blocks, map.mode);
