@@ -6,6 +6,8 @@
 // right = forward × up. Track position is a pure function of song time, so
 // nothing can drift.
 
+import { makeGrid, gridPosition } from '../audio/songmap.js';
+
 export class TrackPath {
   /** @param nodes SongMap nodes ({ rate, t0, count, pos, fwd, up, dist, speed, intensity, color, roll, loop }) */
   constructor(nodes) {
@@ -99,4 +101,48 @@ export function catmullRom(p0, p1, p2, p3, t) {
 /** A reusable sample record for TrackPath.sample. */
 export function makeSample() {
   return { px: 0, py: 0, pz: 0, fx: 0, fy: 0, fz: -1, ux: 0, uy: 1, uz: 0, rx: 1, ry: 0, rz: 0, intensity: 0, speed: 0, dist: 0, r: 0, g: 0, b: 0, loop: 0 };
+}
+
+/**
+ * Split the track into chunks of about `length` metres for pooled meshes:
+ * chunk i covers nodes starts[i] … starts[i + 1] (the boundary node is
+ * shared so there are no gaps). No chunk spans more than `maxNodes` nodes.
+ * Returns { starts: Int32Array (count + 1 entries), dist: Float64Array of
+ * each chunk's start distance, count }.
+ */
+export function planChunks(nodes, length = 50, maxNodes = 96) {
+  const D = nodes.dist, n = nodes.count;
+  const starts = [0];
+  let s = 0;
+  for (let k = 1; k < n; k++) {
+    if (D[k] - D[s] >= length || k - s >= maxNodes - 1) {
+      starts.push(k);
+      s = k;
+    }
+  }
+  if (starts[starts.length - 1] !== n - 1) starts.push(n - 1);
+  const count = starts.length - 1;
+  const dist = new Float64Array(count);
+  for (let i = 0; i < count; i++) dist[i] = D[starts[i]];
+  return { starts: Int32Array.from(starts), dist, count };
+}
+
+/** Index of the chunk containing distance d (clamped). */
+export function chunkAt(plan, d) {
+  const D = plan.dist;
+  let lo = 0, hi = plan.count;
+  while (hi - lo > 1) {
+    const m = (lo + hi) >> 1;
+    if (D[m] <= d) lo = m; else hi = m;
+  }
+  return lo;
+}
+
+/** Beat-grid position of every node (for the phase-locked chevrons). */
+export function nodeBeats(map) {
+  const nd = map.nodes;
+  const grid = makeGrid(map.beats, map.bpm, map.duration);
+  const out = new Float32Array(nd.count);
+  for (let k = 0; k < nd.count; k++) out[k] = gridPosition(grid, nd.t0 + k / nd.rate);
+  return out;
 }

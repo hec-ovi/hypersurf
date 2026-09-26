@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { generateDemoSong } from '../src/audio/demo.js';
 import { analyzeAudio } from '../src/audio/analyze.js';
 import { buildSongMap, LOOP } from '../src/audio/songmap.js';
-import { TrackPath, makeSample, catmullRom } from '../src/game/trackpath.js';
+import { TrackPath, makeSample, catmullRom, planChunks, chunkAt, nodeBeats } from '../src/game/trackpath.js';
 
 const demo = generateDemoSong({ sampleRate: 22050 });
 const map = buildSongMap(analyzeAudio(demo.channels, demo.sampleRate), { mode: 'mono', seed: 'demo' });
@@ -73,4 +73,32 @@ test('distance and time invert each other, beyond both ends too', () => {
     assert.ok(d > last);
     last = d;
   }
+});
+
+test('chunks tile the track without gaps and stay within their node budget', () => {
+  const plan = planChunks(map.nodes, 50, 96);
+  assert.equal(plan.starts[0], 0);
+  assert.equal(plan.starts[plan.count], map.nodes.count - 1);
+  for (let i = 0; i < plan.count; i++) {
+    const a = plan.starts[i], b = plan.starts[i + 1];
+    assert.ok(b > a && b - a <= 95, `chunk ${i}: ${a}..${b}`);
+    const len = map.nodes.dist[b] - map.nodes.dist[a];
+    if (i < plan.count - 1) assert.ok(len >= 50 || b - a === 95);
+    assert.ok(len < 50 + 4, `chunk ${i} is ${len} m`);
+  }
+  // chunkAt finds the chunk holding a distance.
+  for (const d of [-100, 0, 1234.5, 1e9]) {
+    const c = chunkAt(plan, d);
+    assert.ok(c >= 0 && c < plan.count);
+    if (d > plan.dist[0] && d < plan.dist[plan.count - 1]) assert.ok(plan.dist[c] <= d && d < plan.dist[c + 1]);
+  }
+});
+
+test('node beat positions count beats in song time', () => {
+  const beats = nodeBeats(map);
+  const period = 60 / map.bpm;
+  for (let k = 1; k < beats.length; k++) assert.ok(beats[k] > beats[k - 1]);
+  // Over 10 s the grid advances by about 10 / period beats.
+  const k0 = Math.round(20 * 30 + 90), k1 = k0 + 300;
+  assert.ok(Math.abs(beats[k1] - beats[k0] - 10 / period) < 0.2);
 });
