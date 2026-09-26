@@ -42,15 +42,23 @@ export class Hud {
     this.overfill = new Uint8Array(COLUMNS);
   }
 
-  /** Per-block CSS colours for the grid, from the SongMap. */
+  /** Per-block CSS colours for the grid, from the SongMap (a live map's are made as blocks arrive). */
   load(map, path, title) {
-    const rgb = [0, 0, 0], s = makeSample();
+    this.map = map;
+    this.path = path;
     this.blockColours = new Array(map.blocks.count);
-    for (let i = 0; i < map.blocks.count; i++) {
-      gradientAt(path.sample(map.blocks.time[i], s).intensity, rgb);
-      this.blockColours[i] = linearToHex(rgb);
-    }
+    for (let i = 0; i < map.blocks.count; i++) this._colour(i);
     this.el.title.textContent = title || '';
+  }
+
+  _colour(i) {
+    let c = this.blockColours[i];
+    if (!c) {
+      const rgb = this._rgb || (this._rgb = [0, 0, 0]);
+      gradientAt(this.path.sample(this.map.blocks.time[i], this._s || (this._s = makeSample())).intensity, rgb);
+      c = this.blockColours[i] = linearToHex(rgb);
+    }
+    return c;
   }
 
   reset(mode) {
@@ -74,7 +82,7 @@ export class Hud {
       if (v === this.shown[k]) continue;
       const c = this.cells[k];
       if (v >= 0) {
-        c.style.setProperty('--c', this.blockColours[v] || '#fff');
+        c.style.setProperty('--c', this._colour(v));
         c.classList.add('on');
         if (this.shown[k] < 0) { c.classList.remove('pop'); void c.offsetWidth; c.classList.add('pop'); }
       } else c.classList.remove('on', 'pop');

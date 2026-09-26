@@ -2,7 +2,11 @@
 // and Ninja spikes), power blocks, chain-span strips and hit shards. The
 // visible window is rebuilt every frame from the SongMap and the rules'
 // block states, with all matrices written relative to the floating origin.
-// Nothing here allocates per frame.
+// Nothing here allocates per frame (a live map's growth aside).
+//
+// A live map's blocks also carry an alpha: ghosts at 40% until a beat
+// confirms them, withdrawn ones fading to nothing. It reaches the shaders
+// as aInst.w = alpha − 1 (≤ 0; positive values stay a hit flash).
 
 import * as THREE from 'three/webgpu';
 import { BLOCK } from '../audio/songmap.js';
@@ -73,18 +77,30 @@ export class BlockField {
   load(map, path) {
     this.map = map;
     this.path = path;
-    const b = map.blocks, n = b.count;
-    this.tint = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++) {
-      path.sample(b.time[i], this.s);
+    this.tint = new Float32Array(Math.max(map.blocks.count, map.blocks.capacity || 0) * 3);
+    this.tinted = 0;
+    this._tints();
+    this.first = 0;
+    this.shards.n = 0;
+  }
+
+  /** Tints for blocks not seen yet (all of them for a file; the new ones for a live map). */
+  _tints() {
+    const b = this.map.blocks, n = b.count;
+    if (n * 3 > this.tint.length) {
+      const next = new Float32Array(Math.max(n, (b.capacity || n)) * 3);
+      next.set(this.tint);
+      this.tint = next;
+    }
+    for (let i = this.tinted; i < n; i++) {
+      this.path.sample(b.time[i], this.s);
       gradientAt(this.s.intensity, this._rgb);
       const k = 2.5 + 1.5 * b.strength[i];
       this.tint[i * 3] = this._rgb[0] * k;
       this.tint[i * 3 + 1] = this._rgb[1] * k;
       this.tint[i * 3 + 2] = this._rgb[2] * k;
     }
-    this.first = 0;
-    this.shards.n = 0;
+    this.tinted = n;
   }
 
   reset() {
@@ -102,15 +118,19 @@ export class BlockField {
     const map = this.map;
     if (!map) return;
     const b = map.blocks, s = this.s;
+    if (this.tinted < b.count) this._tints();
+    const alpha = b.alpha || null;
     while (this.first < b.count && b.time[this.first] < t - 1) this.first++;
     let nc = 0, nh = 0, np = 0, ns = 0;
     const cm = this.colour.instanceMatrix.array, ci = this.colour.geometry.attributes.aInst.array;
     const hm = this.hazard.instanceMatrix.array, hi = this.hazard.geometry.attributes.aInst.array;
-    const pm = this.power.instanceMatrix.array;
+    const pm = this.power.instanceMatrix.array, pi = this.power.geometry.attributes.aInst.array;
     const sm = this.span.instanceMatrix.array, si = this.span.geometry.attributes.aInst.array;
     for (let i = this.first; i < b.count && b.time[i] <= tAhead; i++) {
       const type = b.type[i], taken = state[i] === TAKEN;
       const tb = b.time[i], lane = b.lane[i];
+      const a = alpha ? alpha[i] : 1;
+      if (a <= 0) continue;
       // Chain span strip under the block, drawn even when the block was taken.
       if (b.spanEnd[i] > tb && type !== BLOCK.POWER) ns = this._span(i, Math.max(tb, t - 0.3), Math.min(b.spanEnd[i], tAhead), lane, sm, si, ns, origin);
       if (taken) continue;
@@ -124,25 +144,26 @@ export class BlockField {
         if (np >= CAPS.power) continue;
         const spin = wallTime * 2.2;
         writeMatrix(pm, np, s, lx, 1.3, origin, 1, spin);
+        pi[np * 4 + 3] = a - 1;
         np++;
       } else if (type === BLOCK.GREY) {
         if (nh >= CAPS.hazard) continue;
         writeMatrix(hm, nh, s, lx, 0.75, origin, 1, wallTime * 1.3 + i);
-        hi[nh * 4 + 3] = 0;
+        hi[nh * 4 + 3] = a - 1;
         nh++;
       } else {
         if (nc >= CAPS.colour) continue;
         writeMatrix(cm, nc, s, lx, 0.62, origin, 1, 0);
         ci[nc * 4] = this.tint[i * 3]; ci[nc * 4 + 1] = this.tint[i * 3 + 1]; ci[nc * 4 + 2] = this.tint[i * 3 + 2];
         // Missed blocks dim as they pass.
-        ci[nc * 4 + 3] = 0;
+        ci[nc * 4 + 3] = a - 1;
         if (state[i] === 2) { ci[nc * 4] *= 0.25; ci[nc * 4 + 1] *= 0.25; ci[nc * 4 + 2] *= 0.25; }
         nc++;
       }
     }
     commit(this.colour, nc, true);
     commit(this.hazard, nh, true);
-    commit(this.power, np, false);
+    commit(this.power, np, true);
     commit(this.span, ns, true);
     this.visible = nc + nh + np;
     this._updateShards(wallTime, origin);

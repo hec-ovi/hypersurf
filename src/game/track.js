@@ -2,6 +2,11 @@
 // SongMap nodes around the ship. Each chunk stores vertices relative to its
 // own first node (computed in float64), and its mesh sits at that node minus
 // the floating origin, so float32 precision holds kilometres down the track.
+//
+// A live map grows while it plays and rewrites its provisional tail, so its
+// chunks are cut every LIVE_CHUNK_NODES nodes instead of by distance, and
+// invalidate() marks chunks over rewritten nodes stale: they stay drawn
+// until rebuilt, a few per frame, nearest first.
 
 import * as THREE from 'three/webgpu';
 import { planChunks, chunkAt } from './trackpath.js';
@@ -27,6 +32,8 @@ const ATTRS = ['position', 'normal', 'aData', 'aTint'];
 
 export const CHUNK_LENGTH = 50;
 export const CHUNK_NODES = 96;
+export const LIVE_CHUNK_NODES = 64;
+const REBUILDS_PER_FRAME = 3;
 
 export class TrackMesh {
   constructor(scene, material, { poolSize = 18, behind = 60, ahead = 700 } = {}) {
@@ -49,11 +56,13 @@ export class TrackMesh {
       mesh.visible = false;
       mesh.matrixAutoUpdate = true;
       scene.add(mesh);
-      this.pool.push({ mesh, chunk: -1, ox: 0, oy: 0, oz: 0 });
+      this.pool.push({ mesh, chunk: -1, end: -1, stale: false, ox: 0, oy: 0, oz: 0 });
     }
     this.plan = null;
     this.map = null;
     this.beats = null;
+    this.live = false;
+    this.planFrom = 0;
     this.active = 0;
     this.builds = 0;
   }
@@ -62,16 +71,49 @@ export class TrackMesh {
   load(map, beats) {
     this.map = map;
     this.beats = beats;
-    this.plan = planChunks(map.nodes, CHUNK_LENGTH, CHUNK_NODES);
+    this.live = !!map.live;
+    if (this.live) {
+      const cap = Math.ceil(map.nodes.capacity / LIVE_CHUNK_NODES) + 2;
+      this.plan = { starts: new Int32Array(cap + 1), dist: new Float64Array(cap), count: 0 };
+      this.planFrom = 0;
+      this._livePlan();
+    } else this.plan = planChunks(map.nodes, CHUNK_LENGTH, CHUNK_NODES);
     for (let i = 0; i < this.pool.length; i++) {
       this.pool[i].chunk = -1;
+      this.pool[i].stale = false;
       this.pool[i].mesh.visible = false;
     }
+  }
+
+  /** Live maps: nodes from `node` on were rewritten; the chunks over them are stale. */
+  invalidate(node) {
+    const c0 = Math.max(0, Math.floor((node - 1) / LIVE_CHUNK_NODES));
+    if (c0 < this.planFrom) this.planFrom = c0;
+    for (let i = 0; i < this.pool.length; i++) if (this.pool[i].chunk >= c0) this.pool[i].stale = true;
+  }
+
+  /** Live maps: chunk c spans nodes c·64 … (c + 1)·64, the last one partial. */
+  _livePlan() {
+    const nd = this.map.nodes, n = nd.count, plan = this.plan;
+    const count = Math.max(1, Math.ceil((n - 1) / LIVE_CHUNK_NODES));
+    if (count + 1 > plan.starts.length) {
+      const starts = new Int32Array((count + 1) * 2), dist = new Float64Array((count + 1) * 2);
+      starts.set(plan.starts);
+      dist.set(plan.dist);
+      plan.starts = starts;
+      plan.dist = dist;
+    }
+    const from = Math.max(0, Math.min(this.planFrom, plan.count - 1));
+    for (let c = from; c <= count; c++) plan.starts[c] = Math.min(c * LIVE_CHUNK_NODES, n - 1);
+    for (let c = from; c < count; c++) plan.dist[c] = nd.dist[plan.starts[c]];
+    plan.count = count;
+    this.planFrom = count - 1; // the last chunk may still grow
   }
 
   /** Keep the chunks around distance d built and placed relative to origin. */
   update(d, origin) {
     if (!this.plan) return;
+    if (this.live) this._livePlan();
     const plan = this.plan;
     const c0 = chunkAt(plan, d - this.behind);
     let c1 = chunkAt(plan, d + this.ahead);
@@ -82,13 +124,23 @@ export class TrackMesh {
       const slot = pool[i];
       if (slot.chunk !== -1 && (slot.chunk < c0 || slot.chunk > c1)) {
         slot.chunk = -1;
+        slot.stale = false;
         slot.mesh.visible = false;
       }
     }
+    let rebuilds = 0;
     for (let c = c0; c <= c1; c++) {
-      let found = false;
-      for (let i = 0; i < n; i++) if (pool[i].chunk === c) { found = true; break; }
-      if (found) continue;
+      let found = -1;
+      for (let i = 0; i < n; i++) if (pool[i].chunk === c) { found = i; break; }
+      if (found >= 0) {
+        // A live chunk built before its nodes were final (stale, or the last one, still growing).
+        const slot = pool[found];
+        if ((slot.stale || slot.end !== plan.starts[c + 1]) && rebuilds < REBUILDS_PER_FRAME) {
+          this._build(slot, c);
+          rebuilds++;
+        }
+        continue;
+      }
       for (let i = 0; i < n; i++) {
         if (pool[i].chunk !== -1) continue;
         this._build(pool[i], c);
@@ -106,7 +158,7 @@ export class TrackMesh {
   }
 
   _build(slot, c) {
-    const nd = this.map.nodes, beats = this.beats;
+    const nd = this.map.nodes, beats = this.live ? nd.beat : this.beats; // live arrays are replaced when they grow
     const a = this.plan.starts[c], b = this.plan.starts[c + 1];
     const g = slot.mesh.geometry;
     const P = g.attributes.position.array, N = g.attributes.normal.array;
@@ -147,6 +199,8 @@ export class TrackMesh {
     sphere.center.set((minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2);
     sphere.radius = Math.hypot(maxX - minX, maxY - minY, maxZ - minZ) / 2;
     slot.chunk = c;
+    slot.end = b;
+    slot.stale = false;
     slot.ox = ox; slot.oy = oy; slot.oz = oz;
     slot.mesh.visible = true;
     this.builds++;

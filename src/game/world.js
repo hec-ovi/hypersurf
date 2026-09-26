@@ -12,6 +12,10 @@
 //            around the camera; they streak with speed and flash on hits
 //   wires    six skywires high over the track, three bands a side, that
 //            glow with their band's level (one instanced mesh of segments)
+//
+// A live map grows and rewrites its provisional tail: invalidate() tells
+// the world which nodes moved, the wires' path is recomputed from there,
+// and pillar slots whose node moved are rewritten a few per frame.
 
 import * as THREE from 'three/webgpu';
 import { uniform, uniformArray } from 'three/tsl';
@@ -40,6 +44,9 @@ const WIRE_STEP = 8; // nodes per segment, aligned to the node grid so wires do 
 const WIRE_SEGS = 104; // per wire: covers the draw distance at the slowest speed
 const WIRE_FAR = 640;
 const WIRE_SMOOTH = 45; // nodes either side averaged into the wires' path
+
+const SLOT_REWRITES = 6; // live: pillar slots rewritten per frame at most
+const SLOT_MOVE = 2; // metres a slot's node may move before its pillars follow
 
 const DEBRIS_MAX = 4096;
 const DEBRIS_VOLUME = 110; // metres per side of the wrap-around cube
@@ -76,6 +83,8 @@ export class World {
     this.pillars.frustumCulled = false;
     scene.add(this.pillars);
     this.slotOf = new Int32Array(RING).fill(-1);
+    this.slotAt = new Float64Array(RING * 3); // node position each slot was written for
+    this.staleFrom = Infinity; // live: first slot whose node may have moved
     this.levels = new Float32Array(16);
 
     // --- rings ---
@@ -127,13 +136,65 @@ export class World {
 
   load(map) {
     this.map = map;
+    this.live = !!map.live;
     this.slotOf.fill(-1);
+    this.staleFrom = Infinity;
     this.aSize.array.fill(0);
     this.aSize.needsUpdate = true;
     this.levels.fill(0);
-    this.ringNodes = ringNodes(map.nodes);
+    this.ringNodes = this.live ? map.rings.list : ringNodes(map.nodes);
+    this.ringCount = this.live ? map.rings.count : this.ringNodes.length;
     this.rings.count = 0;
-    this._skyPath(map.nodes);
+    if (this.live) {
+      this.skyRaw = null; // a file's sky path may have left arrays of its own size
+      this.skyN = 0;
+      this._skyLive(0);
+    } else this._skyPath(map.nodes);
+  }
+
+  /** Live maps: nodes from `node` on were rewritten (or added). */
+  invalidate(node) {
+    if (!this.live) return;
+    this._skyLive(node);
+    const j = Math.floor(node / NODES_PER_SLOT);
+    if (j < this.staleFrom) this.staleFrom = j;
+  }
+
+  /**
+   * The live sky path: the nodes' positions and horizontal right, averaged
+   * over ±WIRE_SMOOTH nodes, recomputed from node `from` on (a live track
+   * has no loops to bridge). Sliding sums keep it linear in the nodes.
+   */
+  _skyLive(from) {
+    const nd = this.map.nodes, n = nd.count;
+    if (!this.skyRaw || this.skyRaw.length < n * 3) {
+      const cap = Math.max(n, nd.capacity || n);
+      const raw = new Float64Array(cap * 3), rawR = new Float32Array(cap * 2), P = new Float64Array(cap * 3), R = new Float32Array(cap * 2);
+      if (this.skyRaw) { raw.set(this.skyRaw); rawR.set(this.skyRawR); P.set(this.skyPos); R.set(this.skyRight); }
+      this.skyRaw = raw; this.skyRawR = rawR; this.skyPos = P; this.skyRight = R;
+      from = Math.min(from, this.skyN);
+    }
+    const raw = this.skyRaw, rawR = this.skyRawR, P = this.skyPos, R = this.skyRight, W = WIRE_SMOOTH;
+    for (let k = Math.max(0, from); k < n; k++) {
+      raw[k * 3] = nd.pos[k * 3]; raw[k * 3 + 1] = nd.pos[k * 3 + 1]; raw[k * 3 + 2] = nd.pos[k * 3 + 2];
+      const fx = nd.fwd[k * 3], fz = nd.fwd[k * 3 + 2], fl = Math.hypot(fx, fz) || 1;
+      rawR[k * 2] = -fz / fl;
+      rawR[k * 2 + 1] = fx / fl;
+    }
+    const k0 = Math.max(0, from - W);
+    let sx = 0, sy = 0, sz = 0, rx = 0, rz = 0, lo = Math.max(0, k0 - W), hi = Math.min(n - 1, k0 + W);
+    for (let j = lo; j <= hi; j++) { sx += raw[j * 3]; sy += raw[j * 3 + 1]; sz += raw[j * 3 + 2]; rx += rawR[j * 2]; rz += rawR[j * 2 + 1]; }
+    for (let k = k0; k < n; k++) {
+      const nlo = Math.max(0, k - W), nhi = Math.min(n - 1, k + W);
+      while (hi < nhi) { hi++; sx += raw[hi * 3]; sy += raw[hi * 3 + 1]; sz += raw[hi * 3 + 2]; rx += rawR[hi * 2]; rz += rawR[hi * 2 + 1]; }
+      while (lo < nlo) { sx -= raw[lo * 3]; sy -= raw[lo * 3 + 1]; sz -= raw[lo * 3 + 2]; rx -= rawR[lo * 2]; rz -= rawR[lo * 2 + 1]; lo++; }
+      const m = hi - lo + 1;
+      P[k * 3] = sx / m; P[k * 3 + 1] = sy / m; P[k * 3 + 2] = sz / m;
+      const rl = Math.hypot(rx, rz) || 1;
+      R[k * 2] = rx / rl;
+      R[k * 2 + 1] = rz / rl;
+    }
+    this.skyN = n;
   }
 
   /**
@@ -201,6 +262,11 @@ export class World {
     this.debrisOffset.value.set(wx - Math.floor(wx), wy - Math.floor(wy), wz - Math.floor(wz));
     const map = this.map;
     if (!map) return;
+    if (this.live) {
+      this.ringNodes = map.rings.list;
+      this.ringCount = map.rings.count;
+      if (this.skyN < map.nodes.count) this._skyLive(this.skyN);
+    }
     this._levels(t, dt);
     this._rings(t, tAhead, origin);
     this._wires(nodeIndex, tAhead, origin);
@@ -208,28 +274,40 @@ export class World {
     const slots = Math.floor((nodes.count - 1) / NODES_PER_SLOT);
     const j0 = Math.max(0, Math.floor(nodeIndex / NODES_PER_SLOT) - 2);
     const j1 = Math.min(slots, j0 + RING - 1);
-    let wrote = false;
+    let wrote = false, rewrites = 0;
     for (let j = j0; j <= j1; j++) {
       const r = j % RING;
-      if (this.slotOf[r] === j && !rebased) continue;
+      if (this.slotOf[r] === j && !rebased) {
+        // Live: a slot over a rewritten node follows it once it moved enough.
+        if (j < this.staleFrom || rewrites >= SLOT_REWRITES || !this._slotMoved(j, r)) continue;
+        rewrites++;
+      }
       this._writeSlot(j, r, origin);
       this.slotOf[r] = j;
       wrote = true;
     }
+    if (rewrites < SLOT_REWRITES) this.staleFrom = Infinity;
     if (wrote) {
       this.aPos.needsUpdate = true;
       this.aSize.needsUpdate = true;
     }
   }
 
+  _slotMoved(j, r) {
+    const nd = this.map.nodes, k = j * NODES_PER_SLOT, a = this.slotAt;
+    const dx = nd.pos[k * 3] - a[r * 3], dy = nd.pos[k * 3 + 1] - a[r * 3 + 1], dz = nd.pos[k * 3 + 2] - a[r * 3 + 2];
+    return dx * dx + dy * dy + dz * dz > SLOT_MOVE * SLOT_MOVE;
+  }
+
   /** Band levels at song time t, gated and smoothed (fast attack, slower release). */
   _levels(t, dt) {
     const sky = this.map.skyline, bands = sky.bands;
-    const f = Math.min(Math.floor(sky.data.length / bands) - 1, Math.max(0, Math.round(t * sky.rate)));
+    const frames = sky.frames !== undefined ? sky.frames : Math.floor(sky.data.length / bands);
+    const f = Math.min(frames - 1, Math.max(0, Math.round(t * sky.rate)));
     const arr = this.uniforms.bands.array;
     const up = 1 - Math.exp(-dt / 0.04), down = 1 - Math.exp(-dt / 0.25);
     for (let b = 0; b < 16; b++) {
-      const raw = t < 0 ? 0 : sky.data[f * bands + (b % bands)] / 255;
+      const raw = t < 0 || f < 0 ? 0 : sky.data[f * bands + (b % bands)] / 255;
       const target = Math.pow(Math.max(0, (raw - 0.4) / 0.6), 1.5);
       const cur = this.levels[b];
       this.levels[b] = cur + (target - cur) * (target > cur ? up : down);
@@ -239,13 +317,13 @@ export class World {
 
   /** Rings between just behind the ship and the draw distance. */
   _rings(t, tAhead, origin) {
-    const nd = this.map.nodes, list = this.ringNodes, m = this.rings.instanceMatrix.array, inst = this.ringInst.array;
+    const nd = this.map.nodes, list = this.ringNodes, count = this.ringCount, m = this.rings.instanceMatrix.array, inst = this.ringInst.array;
     // First ring at or after t − 0.3 s (binary search; no state to reset on seeks).
     const k0 = Math.floor((t - 0.3 - nd.t0) * nd.rate);
-    let lo = 0, hi = list.length;
+    let lo = 0, hi = count;
     while (lo < hi) { const mid = (lo + hi) >> 1; if (list[mid] < k0) lo = mid + 1; else hi = mid; }
     let n = 0;
-    for (let i = lo; i < list.length && n < RING_CAP; i++) {
+    for (let i = lo; i < count && n < RING_CAP; i++) {
       const k = list[i], tk = nd.t0 + k / nd.rate;
       if (tk > tAhead) break;
       const fx = nd.fwd[k * 3], fy = nd.fwd[k * 3 + 1], fz = nd.fwd[k * 3 + 2];
@@ -315,6 +393,7 @@ export class World {
     const P = this.aPos.array, S = this.aSize.array;
     this._rs = (0x5eed + j * 7919) >>> 0;
     const px = nd.pos[k * 3], py = nd.pos[k * 3 + 1], pz = nd.pos[k * 3 + 2];
+    this.slotAt[r * 3] = px; this.slotAt[r * 3 + 1] = py; this.slotAt[r * 3 + 2] = pz;
     // Horizontal right and forward of the node.
     const fx = nd.fwd[k * 3], fz = nd.fwd[k * 3 + 2];
     const fl = Math.hypot(fx, fz) || 1;

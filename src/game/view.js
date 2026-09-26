@@ -118,6 +118,13 @@ export class GameView {
    * @param swoop  0 → 1 over the swoop-in
    */
   frame(t, dt, wall, shipX, vx, state, juice, swoop) {
+    const map = this.map;
+    if (map.live && map.changedFrom < Infinity) {
+      // The live map rewrote nodes (its provisional tail) since the last frame.
+      this.track.invalidate(map.changedFrom);
+      this.world.invalidate(map.changedFrom);
+      map.changedFrom = Infinity;
+    }
     const s = this.path.sample(t, this.sample);
     // Floating origin.
     const ox = s.px - this.origin.x, oy = s.py - this.origin.y, oz = s.pz - this.origin.z;

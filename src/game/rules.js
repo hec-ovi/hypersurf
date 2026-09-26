@@ -130,6 +130,8 @@ export const REASON = Object.freeze({ TIMER: 1, OVERFILL: 2, PB_OVERFILL: 3, FIN
 
 const EVENT_POOL = 256;
 const PENDING = 0, TAKEN = 1, MISSED = 2;
+/** Block state of a block the live map withdrew (a ghost no beat confirmed). */
+export const WITHDRAWN = 3;
 
 /** Per-lane union of chain spans as sorted, disjoint [start, end) intervals. */
 function spanLanes(blocks) {
@@ -170,6 +172,10 @@ function lastStartAtOrBefore(starts, t) {
  * overlaps that interval with the ship in its lane, at the start of the
  * overlap; everything else in the step happens in time order.
  *
+ * A live map's blocks grow while it plays (blocks.count rises; chain spans
+ * never appear there): new blocks are counted as they arrive, and withdraw()
+ * takes back one that was placed but never confirmed.
+ *
  * @param blocks  SongMap blocks ({ count, time, lane, type, spanEnd, pbRank })
  * @param mode    'mono' | 'ninja' | 'casual'
  */
@@ -180,7 +186,7 @@ export class RulesEngine {
     this.mode = mode;
     this.rules = rules;
     this.blocks = blocks;
-    this.state = new Uint8Array(blocks.count);
+    this.state = new Uint8Array(Math.max(blocks.count, blocks.capacity || 0));
     this.spans = spanLanes(blocks);
 
     this.now = -Infinity;
@@ -200,10 +206,8 @@ export class RulesEngine {
       colour: 0, colourHit: 0, grey: 0, greyHit: 0, power: 0, powerHit: 0,
       matches: 0, biggestMatch: 0, bestCollect: 0, overfills: 0, pbOverfills: 0, duplications: 0, multiplied: 0,
     };
-    for (let i = 0; i < blocks.count; i++) {
-      const t = blocks.type[i];
-      if (t === BLOCK.GREY) this.stats.grey++; else if (t === BLOCK.POWER) this.stats.power++; else this.stats.colour++;
-    }
+    this.counted = 0;
+    this._admit();
 
     this.events = Array.from({ length: EVENT_POOL }, () => ({ type: 0, time: 0, block: -1, lane: 0, value: 0, count: 0, mult: 1, reason: 0 }));
     this.eventCount = 0;
@@ -222,9 +226,34 @@ export class RulesEngine {
     this.eventCount = 0;
   }
 
+  /** Count blocks added since the last call (a live map's grow as it plays). */
+  _admit() {
+    const b = this.blocks;
+    if (b.count > this.state.length) {
+      const next = new Uint8Array(Math.max(b.count, this.state.length * 2));
+      next.set(this.state);
+      this.state = next;
+    }
+    for (let i = this.counted; i < b.count; i++) this._tally(b.type[i], 1);
+    this.counted = b.count;
+  }
+
+  _tally(type, d) {
+    if (type === BLOCK.GREY) this.stats.grey += d; else if (type === BLOCK.POWER) this.stats.power += d; else this.stats.colour += d;
+  }
+
+  /** Take back block i before it was played (live ghosts nothing confirmed). */
+  withdraw(i) {
+    if (i >= this.counted) this._admit();
+    if (this.state[i] !== PENDING) return;
+    this.state[i] = WITHDRAWN;
+    this._tally(this.blocks.type[i], -1);
+  }
+
   /** Advance to song time t with the ship at x (metres from the centre line). */
   step(t, x) {
     if (this.finished || !(t > this.now)) return;
+    if (this.blocks.count !== this.counted) this._admit();
     const lane = laneAt(x, this.rules.shoulders);
     this.lane = lane;
     const b = this.blocks, t0 = this.now;
@@ -271,6 +300,7 @@ export class RulesEngine {
    */
   skipTo(t) {
     if (!(t > this.now)) return;
+    if (this.blocks.count !== this.counted) this._admit();
     const b = this.blocks;
     for (let i = this._first; i < b.count && b.time[i] - HIT_WINDOW.colour.early < t; i++) {
       if (this.state[i] === PENDING && b.time[i] + hitWindow(b.type[i]).late < t) this.state[i] = MISSED;
@@ -282,6 +312,7 @@ export class RulesEngine {
   /** End of song: a live match is scored and anything left untouched counts as missed. */
   finish() {
     if (this.finished) return;
+    if (this.blocks.count !== this.counted) this._admit();
     if (this.timerActive) this._collect(this.now, REASON.FINISH);
     for (let i = this._first; i < this.blocks.count; i++) if (this.state[i] === PENDING) this.state[i] = MISSED;
     this.finished = true;

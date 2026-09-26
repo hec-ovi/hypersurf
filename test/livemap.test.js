@@ -191,3 +191,49 @@ test('arrays grow past their initial capacity and keep their contents', () => {
   assert.equal(map.skyline.data[20 * 16], 200);
   assert.equal(map.skyline.data[9000 * 16 + 5], 100);
 });
+
+test('the rules play a live map: blocks arrive as it grows, withdrawn ghosts never count', async () => {
+  const { RulesEngine, EVENT, WITHDRAWN } = await import('../src/game/rules.js');
+  const { createAutopilot } = await import('../src/game/autopilot.js');
+  const map = new LiveMap({ mode: 'mono' });
+  const rules = new RulesEngine(map.blocks, 'mono');
+  const pilot = createAutopilot(map.blocks);
+  const onsets = drums(128, 0.1);
+  let seen = 0, hits = 0, misses = 0, collected = 0, sim = -LEAD_IN;
+  // Onsets pause between 20 and 26 s: ghosts over the gap are withdrawn.
+  drive(map, {
+    until: 60, grid: steady(128, 0.1), heard: (a, b, m) => { if (b < 20 || a > 26) onsets(a, b, m); },
+    each: (t, m) => {
+      for (; seen < m.cancelled.count; seen++) rules.withdraw(m.cancelled.list[seen % m.cancelled.list.length]);
+      while (sim + 1 / 240 <= t) {
+        sim += 1 / 240;
+        rules.step(sim, pilot(sim));
+        for (let e = 0; e < rules.eventCount; e++) {
+          const ev = rules.events[e];
+          if (ev.type === EVENT.MISS) misses++;
+          else if (ev.type === EVENT.COLLECT) collected += ev.value;
+          else if (ev.type !== EVENT.MATCH && ev.block >= 0) {
+            hits++;
+            assert.equal(m.blocks.status[ev.block], STATUS.SOLID, 'only solid blocks are hit');
+          }
+        }
+        rules.clearEvents();
+      }
+    },
+  });
+  map.dropGhosts();
+  for (; seen < map.cancelled.count; seen++) rules.withdraw(map.cancelled.list[seen % map.cancelled.list.length]);
+  const results = rules.results();
+  let withdrawn = 0, played = 0;
+  for (let i = 0; i < map.blocks.count; i++) {
+    if (rules.state[i] === WITHDRAWN) withdrawn++;
+    else if (map.blocks.time[i] < 59.9) played++;
+  }
+  assert.ok(withdrawn > 5, `${withdrawn} withdrawn`);
+  assert.equal(withdrawn, map.stats.withdrawn);
+  assert.equal(hits + misses, played, 'every played block resolved once');
+  const s = results.stats;
+  assert.equal(s.colour + s.grey + s.power, map.blocks.count - withdrawn, 'withdrawn blocks leave the tallies');
+  assert.ok(s.colourHit > 0.8 * s.colour - 20, `bot took ${s.colourHit} of ${s.colour}`);
+  assert.ok(collected > 0 && results.raw >= collected);
+});

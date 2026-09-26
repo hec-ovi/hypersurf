@@ -124,8 +124,17 @@ export function trackMaterial(u) {
 }
 
 /**
- * Colour blocks: instanced boxes with glowing edges. aInst = (HDR tint, flash).
- * `half` is the box's half size, so edges can be found from the geometry.
+ * aInst.w carries two things: a hit flash when positive, and a live ghost's
+ * alpha when negative (w = alpha − 1: 0 solid, −0.6 a 40% ghost).
+ */
+const instAlpha = (inst) => float(1).add(min(inst.w, 0));
+const instFlash = (inst) => max(inst.w, 0);
+
+/**
+ * Colour blocks: instanced boxes with glowing edges. aInst = (HDR tint, flash
+ * or ghost alpha). `half` is the box's half size, so edges can be found from
+ * the geometry. A ghost keeps its edges (× alpha) and nearly loses its faces
+ * (× alpha²): an outline of the block that is coming.
  */
 export function blockMaterial(half) {
   const m = new THREE.MeshBasicNodeMaterial();
@@ -135,7 +144,8 @@ export function blockMaterial(half) {
     const hi = max(max(p.x, p.y), p.z), lo = min(min(p.x, p.y), p.z);
     const second = p.x.add(p.y).add(p.z).sub(hi).sub(lo);
     const edge = smoothstep(0.7, 0.93, second);
-    return inst.xyz.mul(edge.mul(1.4).add(0.3)).add(vec3(inst.w.mul(3)));
+    const a = instAlpha(inst);
+    return inst.xyz.mul(edge.mul(1.4).mul(a).add(a.mul(a).mul(0.3))).add(vec3(instFlash(inst).mul(3)));
   })();
   return m;
 }
@@ -147,7 +157,7 @@ export function hazardMaterial() {
   m.colorNode = Fn(() => {
     const facing = abs(dot(normalView, positionViewDirection));
     const rim = pow(float(1).sub(facing), 2);
-    return lin(PALETTE.hazardBody).add(lin(PALETTE.hazardRim).mul(rim.mul(1.25))).add(vec3(inst.w.mul(2)));
+    return lin(PALETTE.hazardBody).add(lin(PALETTE.hazardRim).mul(rim.mul(1.25))).mul(instAlpha(inst)).add(vec3(instFlash(inst).mul(2)));
   })();
   return m;
 }
@@ -155,12 +165,13 @@ export function hazardMaterial() {
 /** Power blocks: white core × 6 with a chromatic halo at the rim. */
 export function powerMaterial() {
   const m = new THREE.MeshBasicNodeMaterial();
+  const inst = attribute('aInst', 'vec4');
   m.colorNode = Fn(() => {
     const facing = abs(dot(normalView, positionViewDirection));
     const rim = float(1).sub(facing);
     const hue = rim.mul(7);
     const halo = vec3(sin(hue).mul(0.5).add(0.5), sin(hue.add(2.1)).mul(0.5).add(0.5), sin(hue.add(4.2)).mul(0.5).add(0.5));
-    return mix(vec3(6), halo.mul(4), smoothstep(0.35, 0.9, rim));
+    return mix(vec3(6), halo.mul(4), smoothstep(0.35, 0.9, rim)).mul(instAlpha(inst));
   })();
   return m;
 }
