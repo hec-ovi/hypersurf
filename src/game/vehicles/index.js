@@ -12,11 +12,13 @@
 // themselves to it) and `presentation` (false on the selection stage).
 
 import { DartVehicle } from './dart.js';
+import { WaveVehicle } from './wave.js';
+import { NyanVehicle } from './nyan.js';
 import { vehicleId } from './list.js';
 
 export { VEHICLES, VEHICLE_ORDER, DEFAULT_VEHICLE, vehicleId } from './list.js';
 
-const CLASSES = { dart: DartVehicle };
+const CLASSES = { dart: DartVehicle, wave: WaveVehicle, nyan: NyanVehicle };
 
 /** A new vehicle of kind `id` (unknown ids get the default) in `scene`. */
 export function createVehicle(id, scene, uniforms) {

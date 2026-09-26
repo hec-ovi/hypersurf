@@ -30,6 +30,9 @@ const P = {
   ninja: '<path d="M12 2.5 14 10l7.5 2L14 14l-2 7.5L10 14l-7.5-2L10 10z"/><circle cx="12" cy="12" r="1.6"/>',
   casual: '<ellipse cx="12" cy="12" rx="8" ry="4.5"/><path d="M2 12c0 3.8 4.5 7 10 7s10-3.2 10-7M2 12c0-3.8 4.5-7 10-7s10 3.2 10 7" opacity=".45"/>',
   ship: '<path d="M12 3 20 18l-8-3-8 3z"/><path d="M12 15v5.5"/>',
+  // Vehicle glyphs (Dart uses ship): a swallow-tailed board for Wave, a cat on a pastry with its rainbow for Nyan.
+  board: '<path d="M12 2.5c3 3 4.2 7.5 4.2 11.5v6.5L12 18l-4.2 2.5V14C7.8 10 9 5.5 12 2.5z"/><path d="M12 6.5v8"/>',
+  cat: '<path d="M8.5 8.5h8v7h-8z"/><path d="M16.5 15.5h4.5V11l-1-2.5-1.5 2h-1l-1-2"/><path d="M2.5 10h4M2.5 12.5h4M2.5 15h4"/>',
   diamond: '<path d="M12 4 20 12 12 20 4 12z"/>',
 };
 
