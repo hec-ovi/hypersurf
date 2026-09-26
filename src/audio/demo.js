@@ -81,7 +81,8 @@ export function demoScore(seed = DEMO_SEED) {
         case 'build':
           if (sb === 0) add('riser', t0, 1, 0, sec.bars * BAR);
           add('pad', t0, 0.8, 0, BAR);
-          for (let b = 0; b < 4; b++) add('kick', beat(b), 0.5 + 0.04 * sb);
+          // The kick drops out for the last two bars so the drop lands hard.
+          if (sb < sec.bars - 2) for (let b = 0; b < 4; b++) add('kick', beat(b), 0.5 + 0.04 * sb);
           for (let b = 0; b < 4; b++) add('hat', beat(b + 0.5), 0.6 * hatVel());
           roll(0, sec.bars);
           break;
@@ -110,7 +111,6 @@ export function demoScore(seed = DEMO_SEED) {
             if (sb >= 4) for (let b = 0; b < 4; b++) add('hat', beat(b + 0.5), 0.35 * hatVel());
           } else {
             if (sb === 12) add('riser', t0, 1, 0, 4 * BAR);
-            for (let b = 0; b < 4; b++) add('kick', beat(b), 0.5 + 0.08 * (sb - 12));
             roll(12, 4);
           }
           break;
