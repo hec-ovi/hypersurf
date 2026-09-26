@@ -36,6 +36,7 @@ import { mountIcons } from './ui/icons.js';
 import { decode, decodeAll, setCalm } from './ui/text.js';
 import { BeatCheck } from './ui/beatcheck.js';
 import { Profile } from './ui/profile.js';
+import { zoneFor, hitsZone, ZONE_DISTANCES, ZONE_HALF_WIDTH } from './ui/keepout.js';
 
 const params = new URLSearchParams(location.search);
 const DEBUG = params.has('debug') && params.get('debug') !== '0';
@@ -542,6 +543,7 @@ async function resetRun(start) {
 
 function play() {
   checkCancel();
+  app.zoneDue = true;
   app.lastFrame = performance.now();
   app.view.gfx.resetTiming(app.lastFrame);
   setState('play');
@@ -888,6 +890,87 @@ function leaveLive() {
   stats.live = { available: false, tempo: null, confidence: null };
 }
 
+// --- HUD keep-out -----------------------------------------------------------------
+
+const zoneSample = makeSample();
+/** HUD clusters that can step aside, each with its fallback (docs/art-direction.md §9.1). */
+const HUD_MOVABLE = [['grid', '.hud-grid'], ['feed', '.feed']];
+
+/**
+ * Project the track ahead into the keep-out zone with the camera's current
+ * pose and, if the grid or the feed would touch it, move that cluster to
+ * its fallback. Runs once the swoop-in has settled and on resizes, never
+ * per frame.
+ */
+function placeHud() {
+  const view = app.view;
+  if (!view || !view.map || !view.path || app.state !== 'play') return;
+  const hud = $('hud');
+  const w = innerWidth, h = innerHeight;
+  const path = view.path, o = view.origin, s = zoneSample;
+  const t0 = app.viewT;
+  path.sample(t0, s);
+  const d0 = s.dist;
+  const edges = [];
+  // The stretch between the camera and the ship fills the bottom of the screen.
+  for (const back of [0.05, 0.1, 0.2, 0.3]) {
+    path.sample(t0 - back, s);
+    for (const side of [-1, 1]) {
+      const r = side * ZONE_HALF_WIDTH;
+      edges.push([s.px + s.rx * r - o.x, s.py + s.ry * r - o.y, s.pz + s.rz * r - o.z]);
+    }
+  }
+  let k = 0;
+  for (let t = t0; k < ZONE_DISTANCES.length && t < t0 + 20; t += 0.04) {
+    path.sample(t, s);
+    if (s.dist - d0 < ZONE_DISTANCES[k]) continue;
+    for (const side of [-1, 1]) {
+      const r = side * ZONE_HALF_WIDTH;
+      edges.push([s.px + s.rx * r - o.x, s.py + s.ry * r - o.y, s.pz + s.rz * r - o.z]);
+    }
+    if (k === 0) {
+      // The ship's box, about 1.3 m to each side and 1.2 m up.
+      for (const side of [-1.3, 1.3]) edges.push([s.px + s.rx * side + s.ux * 1.2 - o.x, s.py + s.ry * side + s.uy * 1.2 - o.y, s.pz + s.rz * side + s.uz * 1.2 - o.z]);
+    }
+    k++;
+  }
+  view.camera.updateMatrixWorld();
+  const zone = zoneFor(view.camera.matrixWorldInverse.elements, w / h, edges, w, h);
+  const overlap = [];
+  for (const [name, sel] of HUD_MOVABLE) {
+    // Try the preferred anchor first, then the fallback.
+    delete hud.dataset[name];
+    let r = hud.querySelector(sel).getBoundingClientRect();
+    if (hitsZone(zone, { x: r.left, y: r.top, w: r.width, h: r.height })) {
+      hud.dataset[name] = 'alt';
+      r = hud.querySelector(sel).getBoundingClientRect();
+      if (hitsZone(zone, { x: r.left, y: r.top, w: r.width, h: r.height })) overlap.push(name);
+    }
+  }
+  for (const sel of ['.hud-song', '.hud-score']) {
+    const r = hud.querySelector(sel).getBoundingClientRect();
+    if (hitsZone(zone, { x: r.left, y: r.top, w: r.width, h: r.height })) overlap.push(sel.slice(5));
+  }
+  stats.keepout = { zone: zone.map(([x, y]) => [Math.round(x), Math.round(y)]), overlap, grid: hud.dataset.grid || 'main', feed: hud.dataset.feed || 'main' };
+  if (DEBUG) drawZone(zone);
+}
+
+/** Debug: the zone as an outline (key Z toggles it). */
+function drawZone(zone) {
+  let svg = $('zone');
+  if (!svg) {
+    svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.id = 'zone';
+    svg.setAttribute('aria-hidden', 'true');
+    svg.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;z-index:45;pointer-events:none';
+    svg.innerHTML = '<polygon fill="rgba(255,90,42,.08)" stroke="#ff5a2a" stroke-width="1" stroke-dasharray="4 4"/>';
+    svg.hidden = true;
+    document.body.appendChild(svg);
+  }
+  svg.setAttribute('viewBox', `0 0 ${innerWidth} ${innerHeight}`);
+  svg.firstChild.setAttribute('points', zone.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' '));
+}
+
 // --- frame loop -------------------------------------------------------------------
 
 let liveStatsNext = 0;
@@ -1008,6 +1091,7 @@ function tick(dt) {
   juice.update(dt);
   const yt = app.live && app.live.yt;
   app.hud.update(rules, t, dt, rules.lane);
+  if (app.zoneDue && app.viewT >= app.runStart + SWOOP + 0.5) { app.zoneDue = false; placeHud(); }
   if (yt ? yt.clock.state === VIDEO.ENDED && t > 0 : t > map.duration + 0.75) finishRun();
 }
 
@@ -1396,6 +1480,7 @@ function wireUi() {
   $('sfx-btn').addEventListener('click', () => setSfx(!app.settings.sfx));
   $('calm-btn').addEventListener('click', () => setCalmVisuals(!app.settings.calm));
   focus.onPad = (on) => document.body.classList.toggle('pad', on);
+  focus.onIdleBack = pause;
 
   // Audio file.
   const fileInput = $('file-input');
@@ -1529,6 +1614,7 @@ function wireUi() {
       if (e.code === 'Escape') pause();
       else if (e.code === 'KeyR' && !e.repeat) { e.preventDefault(); restart(); }
       else if (e.code === 'KeyP' && DEBUG) window.__hypersurf.autopilot = !app.autopilot;
+      else if (e.code === 'KeyZ' && DEBUG) { placeHud(); $('zone').hidden = !$('zone').hidden; }
       else if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && app.live) setOctave(app.octave + (e.code === 'BracketLeft' ? -1 : 1));
       else if ((e.code === 'Minus' || e.code === 'Equal') && app.live) nudgeLatency(e.code === 'Minus' ? -1 : 1);
       else if (e.code === 'KeyV' && !e.repeat && app.live && app.live.yt) setVideoMode(app.settings.video === 'hidden' ? 'mini' : 'hidden');
@@ -1545,6 +1631,7 @@ function wireUi() {
   window.addEventListener('resize', () => {
     if (app.view && app.view.gfx.renderer) app.view.resize();
     app.redraw = 2;
+    app.zoneDue = true;
   });
   app.input.onPointerLockLost = pause;
   app.input.attach();

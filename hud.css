@@ -228,3 +228,7 @@ body[data-live][data-video="mini"][data-corner="bl"] .hud-grid { top: 38%; }
   body[data-state="video"][data-video="mini"][data-corner$="r"] #video.center { padding-right: calc(356px + 2 * var(--gutter)); }
   body[data-state="video"][data-video="mini"][data-corner$="l"] #video.center { padding-left: calc(356px + 2 * var(--gutter)); }
 }
+
+/* Keep-out fallbacks (§9.1): chosen by placeHud() when the preferred anchor would touch the track. */
+.hud[data-grid="alt"] .hud-grid { top: 130px; transform: none; }
+.hud[data-feed="alt"] .feed { top: 180px; }
