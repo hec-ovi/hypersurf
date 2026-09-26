@@ -88,6 +88,7 @@ const stats = {
   steps: 0,
   runs: 0,
   lastResults: null,
+  probe: null, // loading-screen GPU probe: { ms at full scale, starting scale, quality }
   flashes: { allowed: 0, denied: 0 },
   live: { available: false, tempo: null, confidence: null },
   audio: { state: 'none', contextTime: 0, sampleRate: 0, outputLatency: 0 },
@@ -339,6 +340,7 @@ async function beginRun() {
     loading(null, 1, 'Preparing the track…');
     app.sfx.prepare();
     await view.compile(app.rules.state);
+    await calibrate();
   }
   app.rules.skipTo(start);
   app.runStart = start;
@@ -440,6 +442,22 @@ function frame() {
   stats.flashes.allowed = app.juice.limiter.allowed;
   stats.flashes.denied = app.juice.limiter.denied;
   if (DEBUG) debugOverlay(t0);
+}
+
+/**
+ * On the loading screen, time a few GPU-synced frames and start at a
+ * resolution scale (or the low tier) the GPU can hold, rather than letting
+ * the governor find it during the swoop-in.
+ */
+async function calibrate() {
+  const gfx = app.view.gfx;
+  const ms = await gfx.probe();
+  if (gfx.governor.calibrate(ms) && gfx.qualityName !== 'low') {
+    lowerQuality();
+    gfx.governor.calibrate(await gfx.probe());
+  }
+  gfx.renderer.setPixelRatio(gfx.pixelRatio());
+  stats.probe = { ms: Math.round(ms * 100) / 100, scale: gfx.governor.scale, quality: gfx.qualityName };
 }
 
 /** Dynamic resolution bottomed out and frames are still slow: drop to the low tier once. */
@@ -572,33 +590,22 @@ async function bench({ from = app.viewT, frames = 300, dt = 1 / 60, render = tru
   if (!view || !view.map) return null;
   const was = app.frozen;
   app.frozen = from; // keep the animation loop from interleaving
-  const backend = view.gfx.renderer.backend;
-  const gl = backend.gl || null, device = backend.device || null;
-  const px = new Uint8Array(4);
   const total = new Float64Array(frames), cpu = new Float64Array(frames);
   const pilot = createAutopilot(app.map.blocks);
   const heap0 = performance.memory ? performance.memory.usedJSHeapSize : 0;
   let draws = 0, tris = 0;
-  const renderer = view.gfx.renderer;
   for (let i = 0; i < frames; i++) {
     const t = from + i * dt;
     // What the animation loop does per frame: without a new node frame the
     // scene pass would reuse its last output.
-    renderer.info.reset();
-    renderer._nodes.nodeFrame.update();
-    renderer.info.frame = renderer._nodes.nodeFrame.frameId;
+    view.gfx.nextFrame();
     const a = performance.now();
     app.ship.step(dt, pilot(t));
     app.juice.update(dt);
     view.frame(t, dt, t, app.ship.x, app.ship.v, app.rules.state, app.juice, 1);
     if (render) view.render();
     const b = performance.now();
-    if (!render) { /* game-side work only */ } else if (gl) {
-      const fb = gl.getParameter(gl.FRAMEBUFFER_BINDING);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
-    } else if (device) await device.queue.onSubmittedWorkDone();
+    if (render) await view.gfx.finish();
     total[i] = performance.now() - a;
     cpu[i] = b - a;
     draws = Math.max(draws, view.gfx.info.drawCalls);
@@ -632,7 +639,7 @@ function debugOverlay(now) {
   const total = a ? Math.round(Object.values(a).reduce((x, y) => x + y, 0)) : 0;
   const m = stats.songMap;
   el.textContent = [
-    `${stats.backend} · ${stats.quality} · pixel ratio ${stats.pixelRatio.toFixed(2)}`,
+    `${stats.backend} · ${stats.quality} · pixel ratio ${stats.pixelRatio.toFixed(2)}${stats.probe ? ` · probe ${stats.probe.ms} ms` : ''}`,
     `fps ${stats.fps.toFixed(0)} · frame ${stats.frameMs.toFixed(1)} ms · cpu ${stats.cpuMs.toFixed(2)} ms`,
     `draw calls ${stats.drawCalls} · triangles ${(stats.triangles / 1000).toFixed(1)}k`,
     `chunks ${stats.chunks} (built ${stats.chunkBuilds}) · blocks ${stats.blocksVisible} · rebases ${stats.rebases}`,

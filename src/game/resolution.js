@@ -49,6 +49,23 @@ export class ResolutionGovernor {
     return true;
   }
 
+  /**
+   * Pick a starting scale from a GPU-synced frame cost measured at scale 1
+   * on the loading screen, so a weak GPU does not spend its first seconds
+   * of play (the swoop-in) far over budget. Frame cost is taken as
+   * proportional to pixel count (scale²), aiming at 80% of the target.
+   * Returns whether even the floor would be too slow (a hint to start on
+   * the low tier). The in-play governor still corrects either way.
+   */
+  calibrate(msAtFull) {
+    if (!(msAtFull > 0 && Number.isFinite(msAtFull))) return false;
+    const budget = this.targetMs * 0.8;
+    let s = 1;
+    while (s > this.minScale + 1e-6 && msAtFull * s * s > budget) s = Math.max(this.minScale, Math.round((s - 0.1) * 10) / 10);
+    this.scale = s;
+    return msAtFull * this.minScale * this.minScale > budget;
+  }
+
   /** The game switched to the low tier: never ask again; start from full scale. */
   acknowledgeLower(minScale) {
     this.lowerRequested = false;

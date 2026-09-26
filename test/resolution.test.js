@@ -48,3 +48,19 @@ test('tab switches and breakpoints are ignored', () => {
   assert.equal(g.update(900, 4000), false);
   assert.equal(g.frameMsEma, ema);
 });
+
+test('calibration starts a slow GPU at a lower scale, and a hopeless one on the low tier', () => {
+  const fast = new ResolutionGovernor();
+  assert.equal(fast.calibrate(4), false);
+  assert.equal(fast.scale, 1);
+  const mid = new ResolutionGovernor({ minScale: 0.6 });
+  assert.equal(mid.calibrate(20), false);
+  assert.ok(mid.scale < 1 && mid.scale >= 0.6, `scale ${mid.scale}`);
+  assert.ok(20 * mid.scale * mid.scale <= (1000 / 60) * 0.8 + 1e-9, 'fits the budget');
+  const slow = new ResolutionGovernor({ minScale: 0.6 });
+  assert.equal(slow.calibrate(60), true);
+  assert.equal(slow.scale, 0.6);
+  const bad = new ResolutionGovernor();
+  assert.equal(bad.calibrate(NaN), false);
+  assert.equal(bad.scale, 1);
+});

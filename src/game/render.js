@@ -176,6 +176,52 @@ export class Renderer {
     this.pipeline.render();
   }
 
+  /** Advance the node frame the way the animation loop does, so scene passes redraw. */
+  nextFrame() {
+    const r = this.renderer;
+    r.info.reset();
+    r._nodes.nodeFrame.update();
+    r.info.frame = r._nodes.nodeFrame.frameId;
+  }
+
+  /** Wait until the GPU has finished the frames submitted so far. */
+  async finish() {
+    const backend = this.renderer.backend;
+    if (backend.device) {
+      await backend.device.queue.onSubmittedWorkDone();
+      return;
+    }
+    const gl = backend.gl;
+    if (!gl) return;
+    // A 1-pixel readback blocks until the frame is drawn.
+    const fb = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, this._px || (this._px = new Uint8Array(4)));
+    gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  }
+
+  /**
+   * Median GPU-synced cost (ms) of `frames` renders of the current scene at
+   * full scale, after `warmup` renders that absorb first-use compiles.
+   */
+  async probe(frames = 12, warmup = 3) {
+    const scale = this.governor.scale;
+    this.governor.scale = 1;
+    this.renderer.setPixelRatio(this.pixelRatio());
+    const times = new Float64Array(frames);
+    for (let i = 0; i < warmup + frames; i++) {
+      this.nextFrame();
+      const a = performance.now();
+      this.render();
+      await this.finish();
+      if (i >= warmup) times[i - warmup] = performance.now() - a;
+    }
+    this.governor.scale = scale;
+    this.renderer.setPixelRatio(this.pixelRatio());
+    times.sort();
+    return times[frames >> 1];
+  }
+
   /** Dynamic resolution: feed the frame interval; the pixel ratio follows the governor. */
   adapt(frameMs, nowMs) {
     if (this.governor.update(frameMs, nowMs)) this.renderer.setPixelRatio(this.pixelRatio());
