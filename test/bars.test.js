@@ -89,6 +89,30 @@ test('a build is three bars of rising intensity and onset energy', () => {
   assert.equal(any, false);
 });
 
+test('a riser out of a breakdown is a build even when its first roll bars are sparser than the breakdown', () => {
+  // Bars 0-11 busy and quiet (plucks: energy 3, level 0.06), then a riser: the level climbs
+  // 0.065, 0.09, 0.13, 0.2 while the onset energy drops (a snare roll in quarters: 1).
+  const levels = [0.065, 0.09, 0.13, 0.2];
+  const run = (rising) => {
+    const bt = new BarTracker();
+    const builds = [];
+    const spec = new Float32Array(16);
+    for (let n = 0; n < 4 * 16; n++) {
+      const bar = n >> 2, inBar = n % 4;
+      spec.fill(40);
+      spec[2 + 3 * (bar % 4)] += 70;
+      spec[inBar === 0 ? 0 : 9] += 50;
+      const riser = bar >= 11 && bar < 15;
+      const level = riser ? (rising ? levels[bar - 11] : 0.065) : 0.06;
+      if (bt.push(n, spec, 0.8, inBar === 0 ? 0.8 : 0, riser ? 1 : 3, level) && bt.buildScore > 0) builds.push(bt.buildBar);
+    }
+    return builds;
+  };
+  const builds = run(true);
+  assert.ok(builds.length >= 1 && builds[0] <= 13, `found at bar ${builds}`);
+  assert.deepEqual(run(false), [], 'a flat breakdown is no build');
+});
+
 test('a gap in the beats forgets everything before it', () => {
   const bt = new BarTracker();
   feed(bt, song({ beats: 60 }));

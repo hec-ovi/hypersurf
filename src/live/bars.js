@@ -23,8 +23,11 @@
 //             change section on 8- and 16-bar lines, so the best position
 //             is where the next section, and the next drop, will start.
 //   builds    a bar that ends three bars of rising intensity and onset
-//             energy (a riser, a snare roll): the song is heading into a
-//             drop, which usually lands on the next phrase line.
+//             energy (a riser, a snare roll), or of intensity climbing bar
+//             after bar out of a quiet stretch (a riser out of a breakdown,
+//             whose first roll bars are sparser than what came before):
+//             the song is heading into a drop, which usually lands on the
+//             next phrase line.
 
 export const BARS = Object.freeze({
   capacity: 256, // beats remembered (64 bars)
@@ -40,6 +43,8 @@ export const BARS = Object.freeze({
   buildRise: 0.04, // intensity rise it needs, and
   buildEnergy: 0.1, // relative onset-energy rise
   buildScore: 0.8, // (rise / 0.15) + energy rise must reach this
+  rampRatio: 1.6, // …or intensity rising to this multiple of three bars back (energy aside),
+  rampStep: 0.005, // the last two bars each at least this above the one before
 });
 
 const mod = (a, n) => ((a % n) + n) % n;
@@ -65,6 +70,7 @@ export class BarTracker {
     this.barSpecOk = new Uint8Array(B);
     this.barDist = new Float64Array(B);
     this.barNovelty = new Float64Array(B);
+    this.barLift = new Float64Array(B);
     this.scratch = new Float64Array(B);
     this.reset();
   }
@@ -82,6 +88,8 @@ export class BarTracker {
     this.buildScore = 0; // > 0: the bar just completed ended a build
     this.buildBar = NaN;
     this.lastBar = NaN; // last completed bar number
+    this.lineLo = 0; // bar lines with a section-change score: lineLo + 2 … lineHi
+    this.lineHi = -1;
   }
 
   /** Ring slot of beat n. */
@@ -125,6 +133,21 @@ export class BarTracker {
 
   levelAt(n) {
     return this.has(n) ? this.level[this._i(n)] : NaN;
+  }
+
+  /**
+   * How much the song changes at the start of bar j (the two bars from it
+   * against the two before; spectrum over its median, intensity, onset
+   * energy), NaN until both bars after it are heard. Known for the bar
+   * lines of the last 64 bars.
+   */
+  lineNovelty(j) {
+    return j >= this.lineLo + 2 && j <= this.lineHi ? this.barNovelty[j - this.lineLo] : NaN;
+  }
+
+  /** The intensity step at the start of bar j (after minus before), NaN when not known. */
+  lineLift(j) {
+    return j >= this.lineLo + 2 && j <= this.lineHi ? this.barLift[j - this.lineLo] : NaN;
   }
 
   /**
@@ -209,6 +232,7 @@ export class BarTracker {
     const D = BARS.dims, B = BARS.phraseBars;
     const jHi = this.lastBar, jLo = Math.max(Math.ceil((this.first - this.downbeat) / 4), jHi - B + 1);
     const nb = jHi - jLo + 1;
+    this.lineHi = -1;
     if (nb < 5) return;
     for (let b = 0; b < nb; b++) {
       const s = this.downbeat + 4 * (jLo + b);
@@ -248,7 +272,10 @@ export class BarTracker {
       const enA = this.barEnergy[b] + this.barEnergy[b + 1], enB = this.barEnergy[b - 2] + this.barEnergy[b - 1];
       const enRel = Math.abs(enA - enB) / Math.max(1e-6, enA, enB);
       this.barNovelty[b] = (med > 1e-9 ? this.barDist[b] / med : 0) + 4 * Math.abs(lvA - lvB) + enRel;
+      this.barLift[b] = lvA - lvB;
     }
+    this.lineLo = jLo;
+    this.lineHi = jLo + nb - 2;
     this.score8.fill(0);
     this.score16.fill(0);
     let lines = 0;
@@ -279,15 +306,29 @@ export class BarTracker {
     const R = BARS.buildBars, j = this.lastBar;
     const s0 = this.downbeat + 4 * (j - R);
     if (!this.has(s0)) return;
-    let lvNow = 0, lvThen = 0, enNow = 0, enThen = 0, lvPrev = 0;
-    for (let m = 0; m < 4; m++) {
-      const now = this._i(s0 + 4 * R + m), then = this._i(s0 + m), prev = this._i(s0 + 4 * (R - 1) + m);
-      lvNow += this.level[now] / 4; lvThen += this.level[then] / 4; lvPrev += this.level[prev] / 4;
-      enNow += this.energy[now]; enThen += this.energy[then];
+    // Bar levels from three bars back to now, and the onset energy of the first and last.
+    let enNow = 0, enThen = 0, ramp = true, prev = -Infinity;
+    const lv = this.scratch; // R + 1 bar levels
+    for (let r = 0; r <= R; r++) {
+      let l = 0;
+      for (let m = 0; m < 4; m++) l += this.level[this._i(s0 + 4 * r + m)] / 4;
+      lv[r] = l;
+      // Rising over the last two bars, and not falling before them.
+      if (r > 0 && l < prev + (r === 1 ? -0.01 : BARS.rampStep)) ramp = false;
+      prev = l;
     }
+    for (let m = 0; m < 4; m++) { enNow += this.energy[this._i(s0 + 4 * R + m)]; enThen += this.energy[this._i(s0 + m)]; }
+    const lvNow = lv[R], lvThen = lv[0], lvPrev = lv[R - 1];
     const rise = lvNow - lvThen, energy = enNow / Math.max(1e-6, enThen) - 1;
-    if (rise < BARS.buildRise || energy < BARS.buildEnergy || lvNow < lvPrev - 0.03) return;
-    const score = rise / 0.15 + energy;
+    if (rise < BARS.buildRise || lvNow < lvPrev - 0.03) return;
+    let score;
+    if (energy >= BARS.buildEnergy) score = rise / 0.15 + energy;
+    else {
+      // A riser out of a quiet stretch: the level climbs bar after bar, by a large factor.
+      const ratio = lvNow / Math.max(0.02, lvThen);
+      if (!ramp || ratio < BARS.rampRatio) return;
+      score = rise / 0.15 + 0.5 * Math.min(2, ratio - 1);
+    }
     if (score < BARS.buildScore) return;
     this.buildScore = score;
     this.buildBar = j;
