@@ -3,7 +3,10 @@
 // heard = ts.contextTime + (now − ts.performanceTime) / 1000 − songStart
 // with ts = context.getOutputTimestamp(). contextTime already is the frame
 // the output device is playing, so outputLatency is NOT subtracted again;
-// it is only used as a fallback while the timestamp still reads zero.
+// it is only used as a fallback while the timestamp has no performanceTime
+// (before the first rendered block, and right after a resume, when Chrome
+// reports the current contextTime with a performanceTime of 0) or an old
+// one (more than half a second: the device has not reported since).
 // The raw value jitters by a render quantum, so it is tracked by a
 // first-order loop at wall-clock rate, snapped on large jumps, and never
 // allowed to run backwards between explicit starts or seeks.
@@ -42,7 +45,8 @@ export class SongClock {
     // A suspended context's timestamp is stale; do not extrapolate it by wall time.
     const running = ctx.state === undefined || ctx.state === 'running';
     let heard;
-    if (ts && (ts.contextTime > 0 || ts.performanceTime > 0)) heard = ts.contextTime + (running ? (nowMs - ts.performanceTime) / 1000 : 0);
+    const fresh = ts && ts.performanceTime > 0 && (!running || nowMs - ts.performanceTime < 500);
+    if (fresh) heard = ts.contextTime + (running ? (nowMs - ts.performanceTime) / 1000 : 0);
     else heard = ctx.currentTime - (ctx.outputLatency || ctx.baseLatency || 0);
     return heard - this.songStart - this.offset;
   }

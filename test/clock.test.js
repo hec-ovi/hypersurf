@@ -79,3 +79,18 @@ test('snaps on a large jump and holds while the context is suspended', () => {
   ctx.state = 'running';
   assert.ok(clock.read() < 1.5);
 });
+
+test('a resumed context whose timestamp has no performance time does not jump the clock', () => {
+  // Chrome, right after resume(): the current contextTime with performanceTime 0.
+  const ctx = fakeContext();
+  let now = 61641;
+  const clock = new SongClock(ctx, { now: () => now });
+  clock.start(30);
+  ctx.currentTime = 51.296;
+  ctx.ts = { contextTime: 51.296, performanceTime: 0 };
+  const t = clock.read();
+  assert.ok(Math.abs(t - (51.296 - 0.04 - 30)) < 1e-9, `read ${t}`);
+  // A timestamp the device stopped updating long ago is not extrapolated either.
+  ctx.ts = { contextTime: 51.3, performanceTime: now - 5000 };
+  assert.ok(clock.raw(now) < 21.5);
+});
