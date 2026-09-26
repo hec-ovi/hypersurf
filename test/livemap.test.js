@@ -1,0 +1,193 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { LiveMap, LIVE, STATUS } from '../src/live/livemap.js';
+import { BLOCK, LEAD_IN } from '../src/audio/songmap.js';
+import { TrackPath, makeSample } from '../src/game/trackpath.js';
+import { DRAW_DISTANCE_M } from './live-fixtures.js';
+
+const FPS = 60;
+
+/**
+ * Drive a LiveMap through a song played as a perfect grid: `beat(t)` gives
+ * the tracker's grid at heard time t (null while it has none), `heard(t0,
+ * t1, map)` reports the onsets heard in (t0, t1], `level(t)` the intensity.
+ */
+function drive(map, { until, grid, heard, level = () => 0.5, each }) {
+  let prev = -LEAD_IN;
+  for (let t = -LEAD_IN; t <= until; t += 1 / FPS) {
+    if (heard) heard(prev, t, map);
+    map.update(t, grid(t), level(t), t);
+    if (each) each(t, map);
+    prev = t;
+  }
+}
+
+/** The tracker's view of a steady song: a grid through `first` at `bpm`. */
+function steady(bpm, first = 0, { confidence = 1, hitRate = 1, from = 3 } = {}) {
+  const T = 60 / bpm;
+  const g = { anchor: NaN, period: T, confidence, hitRate };
+  return (t) => {
+    if (t < from) return null;
+    g.anchor = first + Math.ceil((t - first) / T) * T;
+    return g;
+  };
+}
+
+/** Onsets on every beat (low band, strong) and between beats (high band, medium). */
+function drums(bpm, first = 0, { offbeats = true } = {}) {
+  const T = 60 / bpm;
+  return (t0, t1, map) => {
+    for (let k = Math.ceil((t0 - first) / (T / 2)); first + k * (T / 2) <= t1; k++) {
+      const t = first + k * (T / 2);
+      if (t <= t0 || t < 0) continue;
+      if (k % 2 === 0) map.onset(t, 1, 0);
+      else if (offbeats) map.onset(t, 0.6, 2);
+    }
+  };
+}
+
+const beatsOf = (bpm, first, n) => Array.from({ length: n }, (_, k) => first + (k * 60) / bpm);
+
+test('nodes are committed two seconds ahead and a tail reaches the draw distance', () => {
+  const map = new LiveMap({ mode: 'mono' });
+  const s = makeSample();
+  const path = new TrackPath(map.nodes);
+  drive(map, {
+    until: 30, grid: steady(128), heard: drums(128), level: (t) => (t < 15 ? 0.2 : 0.9),
+    each: (t, m) => {
+      assert.ok(m.nodes.t0 + (m.committed - 1) / 30 >= t + LIVE.horizon - 1 / 30 - 1e-9, `committed through ${t + 2}`);
+      const d = path.sample(t, s).dist;
+      assert.ok(m.nodes.dist[m.nodes.count - 1] - d >= DRAW_DISTANCE_M, `tail at ${t}`);
+    },
+  });
+  const nd = map.nodes;
+  for (let k = 1; k < nd.count; k++) assert.ok(nd.dist[k] > nd.dist[k - 1]);
+  // Intensity (and so slope and colour) follows the music two seconds late.
+  const at = (t) => nd.intensity[Math.round((t - nd.t0) * 30)];
+  assert.ok(at(16.5) < 0.3 && at(17.5) > 0.8, `step lands at 17 s: ${at(16.5)} → ${at(17.5)}`);
+  // Calm climbs, intense dives.
+  assert.ok(nd.pitch[Math.round((12 - nd.t0) * 30)] > 0 && nd.pitch[Math.round((25 - nd.t0) * 30)] < 0);
+});
+
+test('blocks land on the beats, turn solid when beats are confirmed, and never move once solid', () => {
+  const map = new LiveMap({ mode: 'mono' });
+  const solidAt = new Map();
+  drive(map, {
+    until: 40, grid: steady(128, 0.1), heard: drums(128, 0.1),
+    each: (t, m) => {
+      const b = m.blocks;
+      for (let i = 0; i < b.count; i++) {
+        if (b.status[i] === STATUS.SOLID) {
+          if (!solidAt.has(i)) solidAt.set(i, b.time[i]);
+          else assert.equal(b.time[i], solidAt.get(i), 'solid blocks never move');
+        }
+        // Nothing within a second of the ship is a ghost.
+        if (b.time[i] <= t + LIVE.solidBy) assert.notEqual(b.status[i], STATUS.GHOST);
+      }
+    },
+  });
+  const b = map.blocks;
+  assert.ok(b.count > 100, `${b.count} blocks`);
+  assert.equal(map.stats.withdrawn, 0);
+  const T = 60 / 128;
+  for (let i = 0; i < b.count; i++) {
+    const pos = (b.time[i] - 0.1) / (T / 2);
+    assert.ok(Math.abs(pos - Math.round(pos)) * (T / 2) < 0.005, `block ${i} at ${b.time[i]} is on the 8th grid`);
+    if (i > 0) assert.ok(b.time[i] > b.time[i - 1]);
+  }
+  // Strong low beats sit mostly in the centre; the high off-beats mostly outside.
+  let beatCentre = 0, beats = 0, offOuter = 0, offs = 0;
+  for (let i = 0; i < b.count; i++) {
+    if (b.type[i] !== BLOCK.COLOUR) continue;
+    const onBeat = Math.round((b.time[i] - 0.1) / (T / 2)) % 2 === 0;
+    if (onBeat) { beats++; if (b.lane[i] === 0) beatCentre++; } else { offs++; if (b.lane[i] !== 0) offOuter++; }
+  }
+  assert.ok(beats > 40 && offs > 40);
+  assert.ok(beatCentre / beats > 0.4 && offOuter / offs > 0.6, `centre ${beatCentre}/${beats}, outer ${offOuter}/${offs}`);
+  // Sixteen locked bars earn a power block.
+  const pbs = [];
+  for (let i = 0; i < b.count; i++) if (b.type[i] === BLOCK.POWER) pbs.push(b.time[i]);
+  assert.ok(pbs.length >= 1 && pbs[0] > 3 + 64 * T && pbs[0] < 3 + 72 * T + 3, `power blocks at ${pbs}`);
+});
+
+test('ghosts that no beat confirms fade out and are withdrawn', () => {
+  const map = new LiveMap({ mode: 'mono' });
+  // Confident grid, but the onsets stop at 12 s.
+  const onsets = drums(120);
+  drive(map, { until: 20, grid: steady(120), heard: (a, b, m) => { if (b < 12) onsets(a, b, m); } });
+  const b = map.blocks;
+  // The last beat heard (11.5 s) confirmed the ghosts then out to ~13.55 s.
+  let late = 0;
+  for (let i = 0; i < b.count; i++) {
+    if (b.time[i] > 13.6) {
+      late++;
+      assert.equal(b.status[i], STATUS.GONE, `block at ${b.time[i]}`);
+    }
+  }
+  assert.ok(late > 0 && map.stats.withdrawn >= late);
+  assert.equal(map.cancelled.count, map.stats.withdrawn);
+  for (let k = 0; k < map.cancelled.count; k++) assert.equal(b.status[map.cancelled.list[k]], STATUS.GONE);
+});
+
+test('no blocks while the tracker is unsure', () => {
+  for (const g of [steady(128, 0, { confidence: 0.4 }), steady(128, 0, { hitRate: 0.3 }), () => null]) {
+    const map = new LiveMap({ mode: 'mono' });
+    drive(map, { until: 15, grid: g, heard: drums(128) });
+    assert.equal(map.blocks.count, 0);
+  }
+});
+
+test('a phase jump glides at a quarter period per period; solid blocks stay put', () => {
+  const map = new LiveMap({ mode: 'mono' });
+  const T = 0.5;
+  const before = steady(120, 0), after = steady(120, 0.1);
+  let a0At20 = null, shifted = null;
+  drive(map, {
+    until: 22, grid: (t) => (t < 20 ? before(t) : after(t)), heard: drums(120),
+    each: (t, m) => {
+      if (a0At20 === null && t >= 20) a0At20 = m.timeAtBeat(Math.ceil(m.beatAt(t)));
+      if (shifted === null && t >= 20.2) shifted = m.timeAtBeat(Math.round(m.beatAt(a0At20)));
+    },
+  });
+  const moved = shifted - a0At20;
+  assert.ok(moved > 0.02 && moved <= 0.25 * 0.2 + 1e-6, `moved ${moved} s in 0.2 s`);
+  assert.ok(Math.abs(map.timeAtBeat(Math.round(map.beatAt(21.9))) - (Math.round(21.9 / T) * T + 0.1)) < 0.003, 'settled on the new phase');
+});
+
+test('×2 and ÷2 change the block grid', () => {
+  const count = (octave) => {
+    // Casual: beat slots only, at most 2.3 blocks/s, so 70 BPM doubled still fits.
+    const map = new LiveMap({ mode: 'casual' });
+    map.setOctave(octave);
+    const q = 60 / 70 / 4;
+    drive(map, { until: 30, grid: steady(70), heard: (a, b, m) => {
+      // Onsets on every 16th so every slot is remembered as strong.
+      for (let k = Math.ceil(a / q); k * q <= b; k++) if (k * q > a && k * q >= 0) m.onset(k * q, 1, 0);
+    } });
+    return map.blocks.count;
+  };
+  const one = count(0), dbl = count(1), half = count(-1);
+  assert.ok(dbl > 1.6 * one, `×2: ${dbl} vs ${one}`);
+  assert.ok(half < 0.65 * one, `÷2: ${half} vs ${one}`);
+});
+
+test('arrays grow past their initial capacity and keep their contents', () => {
+  const map = new LiveMap({ mode: 'ninja', minutes: 0.2 });
+  const cap = map.nodes.capacity;
+  drive(map, { until: 45, grid: steady(128), heard: drums(128) });
+  assert.ok(map.nodes.capacity > cap && map.blocks.count > 0);
+  const path = new TrackPath(map.nodes), s = makeSample();
+  let last = -Infinity;
+  for (let t = -3; t < 45; t += 0.25) {
+    const d = path.sample(t, s).dist;
+    assert.ok(d > last);
+    last = d;
+  }
+  // The skyline stores frames by song time.
+  map.setSkylineRate(10);
+  map.skylineFrame(2, new Uint8Array(16).fill(200));
+  map.skylineFrame(900, new Uint8Array(16).fill(100));
+  assert.equal(map.skyline.frames, 9001);
+  assert.equal(map.skyline.data[20 * 16], 200);
+  assert.equal(map.skyline.data[9000 * 16 + 5], 100);
+});

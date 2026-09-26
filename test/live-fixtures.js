@@ -83,3 +83,4 @@ export function nearest(list, t) {
 export function gridBeatNear(grid, t) {
   return grid.anchor + Math.round((t - grid.anchor) / grid.period) * grid.period;
 }
+export const DRAW_DISTANCE_M = 650;

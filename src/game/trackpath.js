@@ -14,8 +14,15 @@ export class TrackPath {
     this.nodes = nodes;
     this.rate = nodes.rate;
     this.t0 = nodes.t0;
-    this.count = nodes.count;
-    this.tEnd = this.t0 + (this.count - 1) / this.rate;
+  }
+
+  /** Node count, read live: a live map's nodes grow while the song plays. */
+  get count() {
+    return this.nodes.count;
+  }
+
+  get tEnd() {
+    return this.t0 + (this.nodes.count - 1) / this.rate;
   }
 
   /** Fractional node index at song time t, clamped to the track. */
@@ -138,9 +145,10 @@ export function chunkAt(plan, d) {
   return lo;
 }
 
-/** Beat-grid position of every node (for the phase-locked chevrons). */
+/** Beat-grid position of every node (for the phase-locked chevrons). A live map carries its own. */
 export function nodeBeats(map) {
   const nd = map.nodes;
+  if (nd.beat) return nd.beat;
   const grid = makeGrid(map.beats, map.bpm, map.duration);
   const out = new Float32Array(nd.count);
   for (let k = 0; k < nd.count; k++) out[k] = gridPosition(grid, nd.t0 + k / nd.rate);
