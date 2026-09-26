@@ -69,8 +69,11 @@ export function trackMaterial(u) {
     const line = (c, w) => saturate(float(1).sub(abs(aLat.sub(c)).sub(w).div(fw)));
     const lines = max(line(1.5, 0.05), line(4.5, 0.08));
     // Chevrons in the centre lane, one per beat, phase-locked to the grid.
-    const v = fract(beatPos.sub(aLat.mul(0.16)));
-    const chev = smoothstep(0, 0.03, v).mul(float(1).sub(smoothstep(0.08, 0.14, v))).mul(float(1).sub(smoothstep(0.9, 1.25, aLat)));
+    // Beat position grows in the direction of travel, so the arms trail
+    // behind the tip (lower beat position further out) and the arrow
+    // points forward, with its crisp edge at the front.
+    const v = fract(beatPos.add(aLat.mul(0.16)));
+    const chev = smoothstep(0, 0.06, v).mul(float(1).sub(smoothstep(0.11, 0.14, v))).mul(float(1).sub(smoothstep(0.9, 1.25, aLat)));
     // Faint beat rungs across the outer lanes: the grid the blocks sit on.
     const bf = fract(beatPos);
     const rung = smoothstep(0.985, 1, bf).add(float(1).sub(smoothstep(0, 0.01, bf))).mul(smoothstep(1.6, 2, aLat)).mul(float(1).sub(smoothstep(4.3, 4.5, aLat)));
