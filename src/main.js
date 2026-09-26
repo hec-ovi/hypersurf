@@ -11,7 +11,7 @@ import { GameView } from './game/view.js';
 import { RulesEngine, RULES, EVENT } from './game/rules.js';
 import { InputController, ShipMotion } from './game/input.js';
 import { Juice } from './game/effects.js';
-import { Hud, showResults } from './game/hud.js';
+import { Hud, showResults, formatScore, clock } from './game/hud.js';
 import { BestScores, sha256Hex, safeLocalStorage } from './game/scores.js';
 import { createAutopilot } from './game/autopilot.js';
 import { makeSample } from './game/trackpath.js';
@@ -23,8 +23,19 @@ import { parseVideoId, YouTubePlayer, needsPlay, STATE as VIDEO } from './live/y
 import { captureSupport, captureTabAudio, stopStream, CAPTURE_MESSAGES } from './live/capture.js';
 import { LiveSession, LiveClock, SESSION } from './live/session.js';
 import { LiveMap } from './live/livemap.js';
-import { LiveDock } from './live/panel.js';
+import { MiniPlayer } from './live/panel.js';
 import { SongClock } from './audio/clock.js';
+import { FocusManager } from './ui/focus.js';
+import { TerrainSky } from './ui/terrain.js';
+import { FxLayer, FX_COLOURS } from './ui/particles.js';
+import { Toasts } from './ui/toast.js';
+import { Loading } from './ui/loading.js';
+import { SelectStage } from './ui/stage.js';
+import { modeOptions } from './ui/modes.js';
+import { mountIcons } from './ui/icons.js';
+import { decode, decodeAll, setCalm } from './ui/text.js';
+import { BeatCheck } from './ui/beatcheck.js';
+import { Profile } from './ui/profile.js';
 
 const params = new URLSearchParams(location.search);
 const DEBUG = params.has('debug') && params.get('debug') !== '0';
@@ -39,11 +50,20 @@ const MODE_LABEL = { mono: 'Mono', ninja: 'Ninja', casual: 'Casual' };
 /** ?live=demo: the demo plays through the live listening path (a test hook for the live mode). */
 const LIVE_DEMO = params.get('live') === 'demo';
 const OCTAVE_LABEL = { '-1': 'Blocks every other beat', 0: 'Blocks on the beat', 1: 'Blocks twice per beat' };
+const OCTAVE_TEXT = { '-1': '½', 0: '1', 1: '2' };
 const SETTINGS_KEY = 'hypersurf.settings';
 
 const $ = (id) => document.getElementById(id);
 const storage = safeLocalStorage();
-const dock = new LiveDock($('live-dock'));
+const fx = new FxLayer($('fx'));
+const sky = new TerrainSky($('sky'));
+const toasts = new Toasts($('toasts'));
+const loadUi = new Loading($('loading'));
+const focus = new FocusManager();
+const mini = new MiniPlayer($('mini'), {
+  onMove: (corner) => { app.settings.corner = corner; saveSettings(); },
+  onHide: () => setVideoMode('hidden'),
+});
 
 const app = {
   state: 'boot',
@@ -55,7 +75,7 @@ const app = {
   input: new InputController($('view')),
   ship: new ShipMotion(),
   juice: new Juice(),
-  hud: new Hud($('hud')),
+  hud: new Hud($('hud'), fx),
   best: new BestScores(storage),
   settings: loadSettings(),
   song: null, // { key, title, source, buffer, maps: { mode: SongMap }, timings }
@@ -134,7 +154,8 @@ function loadSettings() {
   // Calm visuals start on for people who ask their system for reduced motion.
   const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
   // capture: the tab-capture delay this browser last measured or was set to (ms).
-  const defaults = { latency: 0, calm: reduced, quality: 'high', mode: 'mono', sfx: true, capture: null };
+  // video: the YouTube mini player's mode ('mini' or 'hidden') and corner.
+  const defaults = { latency: 0, calm: reduced, quality: 'high', mode: 'mono', sfx: true, capture: null, video: 'mini', corner: 'br' };
   try {
     const raw = storage && storage.getItem(SETTINGS_KEY);
     const v = raw ? JSON.parse(raw) : {};
@@ -145,6 +166,8 @@ function loadSettings() {
       mode: RULES[v.mode] ? v.mode : defaults.mode,
       sfx: typeof v.sfx === 'boolean' ? v.sfx : defaults.sfx,
       capture: Number.isFinite(v.capture) ? Math.max(0, Math.min(800, v.capture)) : defaults.capture,
+      video: v.video === 'hidden' ? 'hidden' : 'mini',
+      corner: ['br', 'bl', 'tr', 'tl'].includes(v.corner) ? v.corner : defaults.corner,
     };
   } catch {
     return defaults;
@@ -159,44 +182,53 @@ function saveSettings() {
 
 // --- states ---------------------------------------------------------------------
 
-const SCREENS = { menu: 'menu', analyze: 'loading', paused: 'pause', results: 'results', live: 'live-ready' };
+/** Screen shown in each state. Menu screens sit over the terrain sky; pause and results over the frozen game. */
+const SCREENS = {
+  menu: 'menu', file: 'file', video: 'video', mode: 'mode', settings: 'settings', howto: 'howto',
+  analyze: 'loading', paused: 'pause', results: 'results',
+};
+const SKY = new Set(['menu', 'file', 'video', 'howto', 'analyze']);
 
-function setState(state) {
+function setState(state, initialFocus = null) {
+  const prev = app.state;
   app.state = state;
   stats.state = state;
   document.body.dataset.state = state;
   for (const [s, id] of Object.entries(SCREENS)) $(id).hidden = s !== state;
-  $('hud').hidden = !(state === 'play' || state === 'paused');
+  $('hud').hidden = state !== 'play';
   app.input.enabled = state === 'play';
   if (state !== 'play') app.input.releaseLock();
+  // Settings opened from pause sit over the frozen game instead of the sky.
+  const overGame = state === 'settings' && app.settingsFrom === 'paused';
+  if (overGame) document.body.dataset.over = 'game'; else delete document.body.dataset.over;
+  const skyOn = SKY.has(state) || (state === 'settings' && !overGame) || (state === 'mode' && !(app.view && app.view.gfx.renderer));
+  document.body.classList.toggle('sky', skyOn);
+  if (skyOn) sky.start(app.settings.calm || reducedMotion()); else sky.stop();
+  if (state === 'mode') stage.show(app.settings.mode, app.view && app.view.gfx.renderer ? app.view.gfx : null);
+  else stage.hide();
+  if (state !== 'settings') beatCheck.stop();
+  app.redraw = 2; // frozen screens draw the game once more, then hold the image
+  const root = SCREENS[state] ? $(SCREENS[state]) : null;
+  if (state !== prev || initialFocus) focus.show(root, initialFocus);
+  if (root) decodeAll(root);
 }
 
-function message(text) {
-  $('menu-msg').textContent = text || '';
+const reducedMotion = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+/** A toast outside play (errors, warnings, notes). */
+function note(kind, title, body, opts) {
+  return toasts.show(kind, title, body, opts);
 }
 
-function loading(title, fraction, stage) {
-  if (title != null) document.querySelector('[data-load=title]').textContent = title;
-  if (fraction != null) document.querySelector('[data-load=bar]').style.transform = `scaleX(${Math.max(0, Math.min(1, fraction))})`;
-  if (stage != null) document.querySelector('[data-load=stage]').textContent = stage;
-}
-
-const STAGE_LABEL = {
-  synth: 'Synthesising the demo…',
-  resample: 'Resampling…',
-  spectrum: 'Listening for onsets…',
-  onsets: 'Picking onsets…',
-  tempo: 'Tracking the beat…',
-  loudness: 'Measuring intensity…',
-};
+const STAGE_OF = { synth: 'synth', resample: 'resample', spectrum: 'spectrum', onsets: 'onsets', tempo: 'tempo', loudness: 'loudness' };
 
 function onProgress(fraction, stage) {
-  loading(null, fraction, STAGE_LABEL[stage] || 'Analysing…');
+  if (STAGE_OF[stage]) loadUi.stage(STAGE_OF[stage]);
+  loadUi.progress(fraction * 0.9);
 }
 
 function currentMode() {
-  const checked = document.querySelector('input[name=mode]:checked');
-  return checked && RULES[checked.value] ? checked.value : 'mono';
+  return RULES[app.settings.mode] ? app.settings.mode : 'mono';
 }
 
 // --- audio ------------------------------------------------------------------------
@@ -225,24 +257,52 @@ function analyzer() {
 async function run(task) {
   if (app.busy) return;
   app.busy = true;
-  message('');
+  app.cancelled = false;
   try {
     await task();
   } catch (err) {
+    if (err && err.cancelled) {
+      if (app.player) app.player.stop();
+      return;
+    }
     console.warn(err);
-    stats.errors.push(String(err && err.message ? err.message : err));
+    if (!(err && err.userMessage)) stats.errors.push(String(err && err.message ? err.message : err));
     leaveLive();
     setState('menu');
-    message(err && err.userMessage ? err.userMessage : `Something went wrong: ${err && err.message ? err.message : err}`);
+    const fileProblem = err && err.file;
+    note('error', err && err.title ? err.title : 'Could not play that', err && err.userMessage ? err.userMessage : `Something went wrong: ${err && err.message ? err.message : err}`, {
+      action: fileProblem ? { label: 'Try another file', run: () => setState('file') } : null,
+      links: fileProblem ? [{ label: 'Play demo', run: playDemo }] : [],
+      focus: !!fileProblem,
+    });
   } finally {
     app.busy = false;
   }
 }
 
-function userError(text) {
+function userError(text, title = '', file = false) {
   const e = new Error(text);
   e.userMessage = text;
+  if (title) e.title = title;
+  e.file = file;
   return e;
+}
+
+/** Esc on the loading screen: the task stops at its next step and the menu comes back. */
+function cancelLoad() {
+  if (app.state !== 'analyze' || !app.busy) return;
+  app.cancelled = true;
+  if (app.player) app.player.stop();
+  const live = app.live && app.live.kind === 'youtube';
+  if (app.live && app.live.session) { app.live.session.close(); stopStream(app.live.stream); app.live.session = app.live.stream = null; }
+  setState(live ? 'video' : 'menu');
+}
+
+function checkCancel() {
+  if (!app.cancelled) return;
+  const e = new Error('cancelled');
+  e.cancelled = true;
+  throw e;
 }
 
 function playDemo() {
@@ -252,11 +312,14 @@ function playDemo() {
     const mode = currentMode();
     if (!(app.song && app.song.key === 'demo')) {
       setState('analyze');
-      loading('Demo song', 0, STAGE_LABEL.synth);
+      loadUi.begin('hypersurf demo', `${MODE_LABEL[mode]} · 2:31 · 128 BPM`, { demo: true });
+      loadUi.stage('synth');
       const r = await analyzer().demo({ sampleRate: app.ctx.sampleRate, mode, onProgress });
+      checkCancel();
+      loadUi.stats(statsLine(r.songMap));
       app.analyzedKey = 'demo';
       app.song = {
-        key: 'demo', title: 'hypersurf demo · 128 BPM', source: 'demo',
+        key: 'demo', title: 'hypersurf demo', source: 'demo',
         buffer: toAudioBuffer(app.ctx, r.channels, r.sampleRate), maps: { [mode]: r.songMap }, timings: r.timings,
       };
     }
@@ -273,20 +336,25 @@ function playFile(file) {
     const mode = currentMode();
     const title = file.name.replace(/\.[^.]+$/, '') || 'Untitled';
     setState('analyze');
-    loading(title, 0, 'Reading the file…');
+    loadUi.begin(title, `${MODE_LABEL[mode]} · ${file.name.split('.').pop().toUpperCase()}`, { file: true });
+    loadUi.stage('decode');
     const bytes = await file.arrayBuffer();
     const key = await sha256Hex(bytes);
+    checkCancel();
     if (!(app.song && app.song.key === key)) {
-      loading(null, 0, 'Decoding…');
       let buffer;
       try {
         buffer = await app.ctx.decodeAudioData(bytes);
       } catch {
-        throw userError(`Could not decode “${file.name}”. Try an MP3, WAV, OGG, FLAC or M4A file.`);
+        throw userError(`“${file.name}” could not be decoded. Try an MP3, WAV, OGG, FLAC or M4A file.`, 'File not readable', true);
       }
-      if (buffer.duration > MAX_SECONDS) throw userError('That song is longer than 15 minutes. Please pick a shorter one.');
-      if (buffer.duration < MIN_SECONDS) throw userError('That file is too short to ride.');
+      if (buffer.duration > MAX_SECONDS) throw userError('That song is longer than 15 minutes. Please pick a shorter one.', 'Song too long', true);
+      if (buffer.duration < MIN_SECONDS) throw userError('That file is too short to ride.', 'Song too short', true);
+      checkCancel();
+      loadUi.el.meta.textContent = `${MODE_LABEL[mode]} · ${clock(buffer.duration)}`;
       const r = await analyzer().analyze(copyChannels(buffer), buffer.sampleRate, { mode, seed: key, onProgress });
+      checkCancel();
+      loadUi.stats(statsLine(r.songMap));
       app.analyzedKey = key;
       app.song = { key, title, source: 'file', buffer, maps: { [mode]: r.songMap }, timings: r.timings };
     }
@@ -294,48 +362,88 @@ function playFile(file) {
   });
 }
 
-function playYouTube(input) {
-  const id = parseVideoId(input);
-  if (!id) {
-    message('That does not look like a YouTube link or video ID.');
-    return;
-  }
+/** A short stats line for the loading screen. */
+function statsLine(map) {
+  if (!map) return '';
+  return `Tempo ${Math.round(map.bpm)} BPM · blocks ${formatScore(map.blocks.count)} · power ${map.powerBlocks.length}`;
+}
+
+// --- video setup ------------------------------------------------------------------
+
+/** The video setup screen: a link field, blocks per beat and Start; the found video shows in the mini player. */
+function openVideo() {
+  if (app.busy) return;
   const support = captureSupport();
-  if (!support.ok) {
-    message(CAPTURE_MESSAGES[support.reason]);
-    return;
-  }
-  if (app.busy || app.live) return;
-  message('');
-  try {
-    ensureAudio();
-  } catch (err) {
-    message(err.message);
-    return;
-  }
+  const screen = $('video');
+  screen.classList.toggle('unsupported', !support.ok);
+  if (!support.ok) $('yt-unsupported').textContent = CAPTURE_MESSAGES[support.reason];
+  showOctave();
+  setState('video');
+  if (!support.ok) focus.focus($('yt-file'));
+  else if (app.live && app.live.yt && app.live.yt.ready && !app.live.session) focus.focus($('live-start'));
+}
+
+function videoStatus(text, tone = '') {
+  const el = $('yt-status');
+  el.textContent = text || '';
+  el.className = `status ${tone}`;
+}
+
+function canStart(on) {
+  $('live-start').disabled = !on;
+}
+
+/** The link field changed: find the video ID and load its player (or say why not). */
+function onLinkInput() {
+  const text = $('yt-input').value.trim();
+  const id = parseVideoId(text);
+  if (app.live && app.live.videoId === id) return;
+  if (app.live) leaveLive();
+  canStart(false);
+  if (!text) { videoStatus(''); return; }
+  if (!id) { videoStatus('That is not a YouTube link or video ID.', 'bad'); return; }
+  if (!captureSupport().ok) return;
+  loadVideo(id);
+}
+
+function loadVideo(id) {
   const live = app.live = { kind: 'youtube', videoId: id, yt: null, session: null, stream: null, map: null, clock: null, song: null, seen: 0, seeks: 0, wantPlay: false, playTry: 0 };
-  dock.show(true);
-  dock.status('Loading the video…');
-  dock.canStart(false);
-  dock.octave(app.octave);
-  dock.latency(app.settings.capture === null ? SESSION.defaultLatency : app.settings.capture / 1000);
-  if (app.view && app.view.gfx.renderer) app.view.resize();
-  setState('live');
+  mini.setMode(app.settings.video);
+  mini.setCorner(app.settings.corner);
+  mini.show(true);
+  videoStatus('Loading video', 'wait');
+  canStart(false);
   // The player loads in the background: Back works meanwhile, and nothing waits on it.
-  const yt = live.yt = new YouTubePlayer(dock.player, id, { onState: onVideoState, onError: onVideoError });
+  const yt = live.yt = new YouTubePlayer(mini.player, id, { onState: onVideoState, onError: onVideoError });
   const current = () => app.live === live;
   yt.create().then(() => {
     if (current() && yt.ready && !yt.error) {
-      dock.status('Ready. Press Start and share this tab with its audio.', 'ok');
-      dock.canStart(true);
+      videoStatus('Video found', 'ok');
+      canStart(true);
+      if (app.state === 'video' && document.activeElement === $('yt-input')) focus.focus($('live-start'));
     }
   }, (err) => {
-    if (current()) dock.status(err.userMessage || 'The YouTube player could not be loaded.');
+    if (current()) videoStatus(err.userMessage || 'The YouTube player could not be loaded.', 'bad');
   });
   setTimeout(() => {
     // YouTube's embed never reports a video that does not exist until it is played.
-    if (current() && !yt.ready && !yt.error) dock.status('The video has not loaded after 15 seconds. It may not exist, be private or be blocked from other sites, or the connection is slow. Go Back to try another.');
+    if (current() && !yt.ready && !yt.error) videoStatus('Not loaded after 15 seconds: it may not exist, be private or blocked from other sites, or the connection is slow.', 'bad');
   }, 15000);
+}
+
+/** VIDEO: MINI / HIDDEN (settings, pause screen, hotkey V). */
+function setVideoMode(mode) {
+  app.settings.video = mode === 'hidden' ? 'hidden' : 'mini';
+  saveSettings();
+  mini.setMode(app.settings.video);
+  refreshSelectors();
+  if (app.live && app.live.yt) {
+    if (app.state === 'play') app.hud.callout('', 'Video', 'Press V to switch', app.settings.video === 'hidden' ? 'Hidden' : 'Mini');
+    else {
+      if (app.videoToast) app.videoToast();
+      app.videoToast = note('info', app.settings.video === 'hidden' ? 'Video hidden' : 'Video shown', app.settings.video === 'hidden' ? 'It keeps playing. Press V to show it again.' : 'Drag it by its strip to any corner.');
+    }
+  }
 }
 
 /** Build (or reuse) the SongMap for `mode` and start a run. */
@@ -343,8 +451,11 @@ async function startSong(mode) {
   const song = app.song;
   let map = song.maps[mode];
   if (!map) {
-    setState('analyze');
-    loading(song.title, 1, `Building the ${MODE_LABEL[mode]} track…`);
+    if (app.state !== 'analyze') {
+      setState('analyze');
+      loadUi.begin(song.title, MODE_LABEL[mode], { demo: song.source === 'demo', file: song.source === 'file' });
+    }
+    loadUi.stage(app.analyzedKey !== song.key ? 'resample' : 'build');
     if (app.analyzedKey !== song.key) {
       // The worker holds another song's features: analyse this one again.
       const r = song.source === 'demo'
@@ -355,7 +466,9 @@ async function startSong(mode) {
     } else {
       map = (await analyzer().build({ mode, seed: song.source === 'demo' ? 'demo' : song.key })).songMap;
     }
+    checkCancel();
     song.maps[mode] = map;
+    loadUi.stats(statsLine(map));
   }
   app.map = map;
   app.mode = mode;
@@ -367,6 +480,7 @@ async function startSong(mode) {
   if (view.map !== map) {
     view.load(map);
     app.hud.load(map, view.path, song.title);
+    app.pauseProfile.song(view.path, map.duration, map.powerBlocks.map((pb) => pb.time));
   }
   stats.song = { key: song.key.slice(0, 16), title: song.title, source: song.source, duration: map.duration };
   stats.songMap = { hash: map.hash, mode: map.mode, blocks: map.blocks.count, bpm: Math.round(map.bpm * 100) / 100, powerBlocks: map.powerBlocks.length, stats: map.stats };
@@ -400,15 +514,22 @@ async function resetRun(start) {
   app.juice.calm = app.settings.calm;
   app.input.reset();
   app.input.setShoulders(RULES[mode].shoulders);
-  app.hud.reset(mode);
+  const songKey = app.live ? app.live.song.key : app.song.key;
+  const best = app.best.get(songKey, mode);
+  app.hud.reset(mode, best ? best.final : 0);
   app.autopilot = app.autopilotOn ? createAutopilot(map.blocks) : null;
   view.reset(start);
   if (!view.compiled) {
-    setState('analyze');
-    loading(null, 1, 'Preparing the track…');
+    if (app.state !== 'analyze') {
+      setState('analyze');
+      loadUi.begin(app.live ? app.live.song.title : app.song.title, MODE_LABEL[mode]);
+    }
+    loadUi.stage('shaders');
     app.sfx.prepare();
     await view.compile(app.rules.state);
     await calibrate();
+    loadUi.done();
+    checkCancel();
   }
   app.rules.skipTo(start);
   app.runStart = start;
@@ -420,6 +541,7 @@ async function resetRun(start) {
 }
 
 function play() {
+  checkCancel();
   app.lastFrame = performance.now();
   app.view.gfx.resetTiming(app.lastFrame);
   setState('play');
@@ -438,9 +560,11 @@ function finishRun() {
   const results = app.rules.results();
   const best = app.best.submit(song.key, app.mode, results, app.map.hash);
   stats.lastResults = results;
-  showResults($('results'), { results, best, title: song.title, modeLabel: MODE_LABEL[app.mode] });
-  setState('results');
-  $('restart-btn').focus({ preventScroll: true });
+  if (app.stopCount) app.stopCount();
+  app.stopCount = showResults($('results'), { results, best, title: song.title, modeLabel: MODE_LABEL[app.mode] });
+  if (best.isNew) updateMenuBest();
+  setState('results', $('restart-btn'));
+  decode($('res-title'));
 }
 
 function pause() {
@@ -451,8 +575,26 @@ function pause() {
     live.wantPlay = false;
     live.clock.hold();
   } else app.player.pause().catch(() => {});
-  setState('paused');
-  $('resume-btn').focus({ preventScroll: true });
+  setState('paused', $('resume-btn'));
+  fillPause();
+}
+
+/** The pause screen's song line, stats and profile playhead. */
+function fillPause() {
+  const song = app.live ? app.live.song : app.song;
+  const r = app.rules, t = Math.max(0, app.viewT);
+  const q = (k) => document.querySelector(`[data-pause=${k}]`);
+  q('song').textContent = `${song.title} · ${MODE_LABEL[app.mode]}`;
+  q('score').textContent = formatScore(r.score);
+  q('time').textContent = clock(t);
+  const live = !!app.live;
+  q('total').textContent = live ? '· live' : `/ ${clock(app.map.duration)}`;
+  q('blocks').textContent = formatScore(r.stats.colourHit);
+  q('blocksTotal').textContent = `/ ${formatScore(r.stats.colour)}`;
+  if (live) app.pauseProfile.rolling(app.view.path, t);
+  else app.pauseProfile.draw(); // sized now that the screen shows
+  app.pauseProfile.set(live ? 1 : t / app.map.duration);
+  refreshSelectors();
 }
 
 function resume() {
@@ -471,7 +613,7 @@ function restart() {
   if (!app.map || app.busy) return;
   if (app.state === 'paused') app.player.resume().catch(() => {});
   if (app.live) {
-    if (!app.live.session) { setState('live'); return; } // sharing stopped: Start shares again
+    if (!app.live.session) { openVideo(); return; } // sharing stopped: Start shares again
     if (app.live.yt) app.live.yt.seekTo(0);
     run(beginLiveRun);
     return;
@@ -514,24 +656,36 @@ function startYouTube() {
   ensureAudio();
   const sharing = captureTabAudio({ onEnded: onShareEnded });
   app.busy = true;
-  dock.canStart(false);
-  dock.status('Choose this tab in the prompt and keep its audio on.');
+  app.cancelled = false;
+  canStart(false);
+  videoStatus('Choose this tab in the prompt and keep its audio on', 'wait');
   (async () => {
     try {
       live.stream = await sharing;
+      checkCancel();
       const latency = app.settings.capture === null ? SESSION.defaultLatency : app.settings.capture / 1000;
       live.session = await new LiveSession(app.ctx, live.stream, { clickBus: app.ctx.destination, latency }).open();
       await calibrateLive();
+      checkCancel();
       await beginLiveRun();
     } catch (err) {
-      console.warn(err);
-      if (!err.userMessage) stats.errors.push(String(err && err.message ? err.message : err));
+      if (!(err && err.cancelled)) {
+        console.warn(err);
+        if (!err.userMessage) stats.errors.push(String(err && err.message ? err.message : err));
+      }
       if (live.session) live.session.close();
       stopStream(live.stream);
       live.session = live.stream = null;
-      setState('live');
-      dock.status(err.userMessage || `Something went wrong: ${err.message || err}`);
-      dock.canStart(true);
+      if (app.live === live) {
+        videoStatus('Video found', 'ok');
+        canStart(true);
+        if (app.state !== 'video') openVideo();
+        if (!(err && err.cancelled)) {
+          const denied = err && (err.reason === 'denied' || err.reason === 'no-audio');
+          note(denied ? 'warn' : 'error', err && err.reason === 'no-audio' ? 'Tab audio not shared' : denied ? 'Sharing cancelled' : 'Could not start', err.userMessage || `Something went wrong: ${err.message || err}`,
+            denied ? {} : { action: { label: 'Try again', run: () => focus.focus($('live-start')) }, links: [{ label: 'Play a file', run: () => { leaveLive(); setState('file'); } }, { label: 'Play demo', run: () => { leaveLive(); playDemo(); } }] });
+        }
+      }
     } finally {
       app.busy = false;
     }
@@ -547,19 +701,22 @@ function startYouTube() {
 async function calibrateLive() {
   const live = app.live, yt = live.yt;
   setState('analyze');
-  loading('Listening', 0.5, 'Calibrating: listening for a few clicks…');
+  loadUi.begin(yt ? 'YouTube video' : 'hypersurf demo', 'Live listen · calibrating with a few clicks', { live: true });
+  loadUi.stage('calibrate');
+  loadUi.progress(0.4);
   if (yt && (yt.state === VIDEO.PLAYING || yt.state === VIDEO.BUFFERING)) yt.pause();
   const r = await live.session.calibrate();
-  dock.latency(live.session.latency);
   if (r && yt) {
     // Kept for next time: a tab capture's delay is this browser's and machine's.
     app.settings.capture = Math.round(r.latency * 1000);
     saveSettings();
-    dock.status(`Listening. Capture delay ${Math.round(r.latency * 1000)} ms.`, 'ok');
+    note('info', 'Listening', `Capture delay ${Math.round(r.latency * 1000)} ms.`);
   } else if (yt) {
-    dock.status('Listening, with a typical capture delay. If blocks land before or after the beat, adjust the delay below.', 'hint');
+    note('warn', 'Clicks not heard', 'Timing uses a typical capture delay. If blocks land before or after the beat, change the capture delay on the pause screen (or press - and =).');
   }
-  loading(null, 1, null);
+  loadUi.stage('build');
+  loadUi.progress(0.8);
+  refreshSelectors();
 }
 
 /** The timing control: nudge the capture delay by `steps` (kept for next time). */
@@ -570,8 +727,8 @@ function nudgeLatency(steps) {
   const ms = Math.round(session.latency * 1000);
   app.settings.capture = ms;
   saveSettings();
-  dock.latency(session.latency);
-  if (app.state === 'play') app.hud.toast(`Capture delay ${ms} ms`);
+  refreshSelectors();
+  if (app.state === 'play') app.hud.callout('', 'Delay', 'Capture delay', `${ms} ms`);
 }
 
 /** A live run: a fresh LiveMap grown from what the session hears. */
@@ -589,13 +746,15 @@ async function beginLiveRun() {
   app.map = map;
   app.mode = mode;
   view.load(map);
-  app.hud.load(map, view.path, live.song.title);
+  app.hud.load(map, view.path, live.song.title, { live: true });
   stats.song = { key: live.song.key, title: live.song.title, source: live.song.source, duration };
   stats.songMap = null;
   stats.analysis = null;
   stats.duration = duration;
   stats.mode = mode;
   await resetRun(-LEAD_IN);
+  app.hud.liveStatus({ ...live.session.stats, heard: false });
+  app.pauseProfile.rolling(view.path, 0);
   app.nextBeat = -Infinity;
   ensureAudio();
   app.sfx.setSong(null, 0);
@@ -666,8 +825,8 @@ function liveBeat(t) {
 function setOctave(o) {
   app.octave = Math.max(-1, Math.min(1, o));
   if (app.live && app.live.map) app.live.map.setOctave(app.octave);
-  dock.octave(app.octave);
-  if (app.state === 'play') app.hud.toast(OCTAVE_LABEL[app.octave]);
+  refreshSelectors();
+  if (app.state === 'play') app.hud.callout('', 'Grid', OCTAVE_LABEL[app.octave], OCTAVE_TEXT[app.octave]);
 }
 
 /** "Stop sharing": the run cannot hear the song any more. */
@@ -677,8 +836,11 @@ function onShareEnded() {
   if (app.state === 'play' || app.state === 'paused') finishRun();
   live.session.close();
   live.session = live.stream = null;
-  dock.status('Sharing stopped. Press Start to share the tab again.');
-  dock.canStart(true);
+  if (live.kind === 'youtube') {
+    videoStatus('Video found', 'ok');
+    canStart(true);
+  }
+  note('warn', 'Sharing stopped', 'The game cannot hear the video any more. Press Start to share the tab again.');
 }
 
 /** The viewer paused the video from its own controls: pause the run with it, never restart the video. */
@@ -690,10 +852,14 @@ function onVideoState(state) {
 }
 
 function onVideoError(code, text) {
-  dock.status(text);
-  dock.canStart(false);
-  message(text);
+  videoStatus(text, 'bad');
+  canStart(false);
   if (app.state === 'play' || app.state === 'paused') finishRun();
+  note('error', 'Video unavailable', text, {
+    code: `ERR ${code}`,
+    action: { label: 'Try another link', run: () => { if (app.state !== 'video') openVideo(); const i = $('yt-input'); i.focus(); i.select(); } },
+    links: [{ label: 'Play a file', run: () => { leaveLive(); setState('file'); } }, { label: 'Play demo', run: () => { leaveLive(); playDemo(); } }],
+  });
 }
 
 /** Leave the live mode: stop listening, free the player and give the page back its full width. */
@@ -711,8 +877,7 @@ function leaveLive() {
   } else {
     stopStream(live.stream);
     if (live.yt) live.yt.destroy();
-    dock.show(false);
-    if (app.view && app.view.gfx.renderer) app.view.resize();
+    mini.show(false);
   }
   if (app.sfx) {
     app.sfx.music = app.player.gain;
@@ -731,9 +896,24 @@ function frame() {
   const dt = Math.min(0.1, Math.max(0, (t0 - app.lastFrame) / 1000));
   const frameMs = t0 - app.lastFrame;
   app.lastFrame = t0;
+  if (app.state === 'mode') {
+    // The selection stage borrows the renderer while its screen is open.
+    stage.render(dt);
+    stats.stageFrames = stage.frames;
+    if (DEBUG) debugOverlay(t0);
+    return;
+  }
   const view = app.view;
-  const live = app.state === 'play' || app.state === 'paused' || app.state === 'results';
+  const live = app.state === 'play' || app.state === 'paused' || app.state === 'results' || document.body.dataset.over === 'game';
   if (!live || !view || !view.map) return;
+  // Pause, results and settings over the game show the last frame, blurred
+  // by CSS: draw it once more after the change, then hold it.
+  if (app.state !== 'play') {
+    // Also once a second, in case the browser dropped the held image.
+    if (!(app.redraw > 0) && t0 - (app.heldAt || 0) < 1000) { if (DEBUG) debugOverlay(t0); return; }
+    app.redraw = Math.max(0, (app.redraw || 0) - 1);
+    app.heldAt = t0;
+  }
 
   const frozen = app.frozen !== null;
   if (app.state === 'play' && !frozen) tick(dt);
@@ -768,7 +948,8 @@ function frame() {
   stats.flashes.denied = app.juice.limiter.denied;
   if (app.live && app.live.session && t0 >= liveStatsNext) {
     liveStatsNext = t0 + 250;
-    stats.live = { available: true, ...app.live.session.stats };
+    const ls = stats.live = { available: true, ...app.live.session.stats };
+    if (app.state === 'play') app.hud.liveStatus({ ...ls, heard: app.viewT > 0 && (ls.intensity > 0.02 || ls.blocks > 0) });
   }
   if (DEBUG) debugOverlay(t0);
 }
@@ -826,7 +1007,7 @@ function tick(dt) {
   }
   juice.update(dt);
   const yt = app.live && app.live.yt;
-  app.hud.update(rules, yt ? yt.clock.time / yt.duration : t / map.duration, dt);
+  app.hud.update(rules, t, dt, rules.lane);
   if (yt ? yt.clock.state === VIDEO.ENDED && t > 0 : t > map.duration + 0.75) finishRun();
 }
 
@@ -1006,25 +1187,233 @@ function debugOverlay(now) {
 
 function ready() {
   return app.viewReady.then((ok) => {
-    if (!ok) throw userError('This browser cannot run the 3D view (it needs WebGPU or WebGL2).');
+    if (!ok) throw userError('This browser cannot run the 3D view (it needs WebGPU or WebGL2).', 'No 3D view');
   });
 }
 
-function wireMenu() {
+const stage = new SelectStage($('mode'), modeOptions((id) => {
+  const b = app.best.get('demo', id);
+  return b ? `${formatScore(b.final)} (demo)` : '—';
+}), { fx, noun: 'mode' });
+const beatCheck = new BeatCheck(document.querySelector('.beatcheck'), {
+  audio: () => app.ctx,
+  latencyMs: () => app.settings.latency,
+  calm: () => app.settings.calm,
+});
+app.pauseProfile = new Profile(document.querySelector('[data-pause=profile]'));
+
+const MODE_IDS = ['casual', 'mono', 'ninja'];
+const QUALITY_IDS = ['high', 'medium', 'low'];
+
+/**
+ * An enumerated ‹ VALUE › selector row: ←/→ (a 'step' event from the focus
+ * manager) or its chevrons change the value, without wrapping; Enter wraps.
+ */
+function selector(row, { values, label, get, set }) {
+  const out = row.querySelector('output');
+  const [prev, next] = row.querySelectorAll('.chev');
+  const show = (dir = 0) => {
+    const v = get(), i = values.indexOf(v);
+    const text = label(v);
+    if (out.textContent !== text) {
+      out.textContent = text;
+      if (dir) { out.style.setProperty('--dir', String(dir)); out.classList.remove('swap'); void out.offsetWidth; out.classList.add('swap'); }
+    }
+    if (prev) prev.classList.toggle('end', i <= 0);
+    if (next) next.classList.toggle('end', i >= values.length - 1);
+    row.setAttribute('aria-valuetext', text);
+  };
+  const step = (dir, wrap = false) => {
+    const i = values.indexOf(get());
+    let j = i + dir;
+    if (wrap) j = (j + values.length) % values.length;
+    if (j < 0 || j >= values.length || j === i) return;
+    set(values[j]);
+    show(dir);
+  };
+  row.addEventListener('step', (e) => step(e.detail.dir, e.detail.wrap));
+  if (prev) prev.addEventListener('click', (e) => { e.stopPropagation(); step(-1); row.focus(); });
+  if (next) next.addEventListener('click', (e) => { e.stopPropagation(); step(1); row.focus(); });
+  show();
+  return show;
+}
+
+const selectorViews = [];
+function refreshSelectors() {
+  for (const show of selectorViews) show();
+  const d = app.live && app.live.session ? Math.round(app.live.session.latency * 1000) : app.settings.capture === null ? Math.round(SESSION.defaultLatency * 1000) : app.settings.capture;
+  for (const o of document.querySelectorAll('[data-delay-out]')) o.textContent = `${d} MS`;
+}
+
+function showOctave() {
+  refreshSelectors();
+}
+
+function setCalmVisuals(on) {
+  app.settings.calm = on;
+  app.juice.calm = on;
+  if (app.view) app.view.calm = on;
+  setCalm(on);
+  fx.enabled = !on && !reducedMotion();
+  document.body.classList.toggle('calm', on);
+  $('calm-btn').setAttribute('aria-pressed', String(on));
+  if (sky.on) sky.start(on || reducedMotion());
+  saveSettings();
+}
+
+function setSfx(on) {
+  app.settings.sfx = on;
+  if (app.sfx) app.sfx.enabled = on;
+  $('sfx-btn').setAttribute('aria-pressed', String(on));
+  saveSettings();
+}
+
+function setMode(id) {
+  if (!RULES[id]) return;
+  app.settings.mode = id;
+  $('mode-now').textContent = MODE_LABEL[id];
+  updateMenuBest();
+  saveSettings();
+}
+
+function updateMenuBest() {
+  const b = app.best.get('demo', currentMode());
+  $('menu-best').textContent = b ? formatScore(b.final) : '—';
+}
+
+function setLatency(ms) {
+  app.settings.latency = Math.max(-150, Math.min(300, ms));
+  const input = $('latency');
+  if (Number(input.value) !== app.settings.latency) input.value = String(app.settings.latency);
+  input.style.setProperty('--p', `${((app.settings.latency + 150) / 450) * 100}%`);
+  $('latency-out').textContent = `${app.settings.latency >= 0 ? '+' : '−'}${Math.abs(app.settings.latency)} MS`;
+  if (app.player) app.player.offset = app.settings.latency / 1000;
+  saveSettings();
+}
+
+function openSettings() {
+  app.settingsFrom = app.state === 'paused' ? 'paused' : 'menu';
+  try { ensureAudio(); } catch { /* the beat check stays silent */ }
+  setState('settings');
+  showTab('settings', app.settingsTab || 0, false);
+}
+
+function closeSettings() {
+  if (app.settingsFrom === 'paused') { setState('paused'); fillPause(); } else setState('menu');
+}
+
+/** Underline tabs: select tab i of a screen's tablist. */
+function showTab(screenId, i, focusTab = true) {
+  const tabs = Array.from($(screenId).querySelectorAll('[role=tab]'));
+  const k = (i + tabs.length) % tabs.length;
+  tabs.forEach((t, j) => {
+    t.setAttribute('aria-selected', String(j === k));
+    t.tabIndex = j === k ? 0 : -1;
+    $(t.getAttribute('aria-controls')).hidden = j !== k;
+  });
+  if (screenId === 'settings') app.settingsTab = k;
+  if (screenId === 'howto') app.howtoTab = k;
+  if (focusTab) tabs[k].focus();
+  else {
+    // Focus left in a pane that just closed moves to the new pane's first control.
+    const a = document.activeElement;
+    if (!a || a === document.body || a.closest('[hidden]')) {
+      const first = $(tabs[k].getAttribute('aria-controls')).querySelector('[data-nav]');
+      focus.focus(first || tabs[k]);
+    }
+  }
+  settingsInfo();
+}
+
+function tabStep(screenId, dir) {
+  const tabs = Array.from($(screenId).querySelectorAll('[role=tab]'));
+  const cur = tabs.findIndex((t) => t.getAttribute('aria-selected') === 'true');
+  showTab(screenId, cur + dir, document.activeElement && document.activeElement.getAttribute('role') === 'tab');
+}
+
+/** INFORMATION explains the focused settings row. */
+function settingsInfo() {
+  const el = document.activeElement;
+  const holder = el && el.closest && el.closest('[data-info]');
+  let text = holder ? holder.dataset.info : '';
+  if (!text) {
+    const pane = $('settings').querySelector('.pane:not([hidden]) [data-info]');
+    text = pane ? pane.dataset.info : '';
+  }
+  $('settings-info').textContent = text;
+  // The beat check runs while the latency row has focus.
+  if (app.state === 'settings' && el && el.closest && el.closest('.latency-row')) beatCheck.start();
+  else beatCheck.stop();
+}
+
+function toggleFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  else if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
+}
+
+/** Sparks from an activated control (cyan, gold from the focused one). */
+function sparkFrom(el) {
+  if (!el || !el.getBoundingClientRect || !fx.enabled) return;
+  const r = el.getBoundingClientRect();
+  const gold = el === document.activeElement;
+  fx.burst(r.left + Math.min(r.width, 360) / 2, r.top + r.height / 2, 18, { colour: gold ? FX_COLOURS.gold : FX_COLOURS.cyan, speed: 240, life: 0.45, size: 2.2, jitter: Math.min(r.width, 300) });
+}
+
+function wireUi() {
+  mountIcons();
+  // The inner bevel line of the chamfered buttons, and the ◆ marker of panel actions.
+  for (const b of document.querySelectorAll('.cb')) {
+    b.insertAdjacentHTML('afterbegin', '<svg class="bevel" viewBox="0 0 40 64" preserveAspectRatio="none" aria-hidden="true"><polyline points="14,5 6,29.4 33,59"/></svg>');
+  }
+  for (const b of document.querySelectorAll('.act')) b.insertAdjacentHTML('afterbegin', '<i class="mk" aria-hidden="true"></i>');
+  document.addEventListener('click', (e) => {
+    const b = e.target.closest && e.target.closest('.cb, .act, .dia, .opt');
+    if (b && !b.disabled) sparkFrom(b);
+  });
+
+  // Main menu.
   $('demo-btn').addEventListener('click', playDemo);
+  $('file-btn').addEventListener('click', () => setState('file'));
+  $('video-btn').addEventListener('click', openVideo);
+  const modeBtn = $('mode-btn');
+  modeBtn.addEventListener('click', () => setState('mode'));
+  modeBtn.addEventListener('step', (e) => {
+    const i = MODE_IDS.indexOf(currentMode());
+    const j = e.detail.wrap ? (i + e.detail.dir + 3) % 3 : Math.max(0, Math.min(2, i + e.detail.dir));
+    if (e.detail.wrap) { setState('mode'); return; } // Enter opens mode select
+    setMode(MODE_IDS[j]);
+  });
+  for (const [k, chev] of Array.from(modeBtn.querySelectorAll('.chev')).entries()) {
+    chev.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const i = MODE_IDS.indexOf(currentMode());
+      setMode(MODE_IDS[Math.max(0, Math.min(2, i + (k ? 1 : -1)))]);
+    });
+  }
+  $('settings-btn').addEventListener('click', openSettings);
+  $('howto-btn').addEventListener('click', () => { setState('howto'); showTab('howto', app.howtoTab || 0, false); });
+  $('fs-btn').addEventListener('click', toggleFullscreen);
+  $('sfx-btn').addEventListener('click', () => setSfx(!app.settings.sfx));
+  $('calm-btn').addEventListener('click', () => setCalmVisuals(!app.settings.calm));
+  focus.onPad = (on) => document.body.classList.toggle('pad', on);
+
+  // Audio file.
   const fileInput = $('file-input');
+  $('browse-btn').addEventListener('click', () => fileInput.click());
+  $('drop').addEventListener('click', (e) => { if (e.target === $('drop')) fileInput.click(); });
   fileInput.addEventListener('change', () => {
     const f = fileInput.files && fileInput.files[0];
     fileInput.value = '';
     if (f) playFile(f);
   });
   const drop = $('drop');
-  drop.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fileInput.click(); }
-  });
+  const canDrop = () => app.state === 'menu' || app.state === 'file';
   window.addEventListener('dragover', (e) => {
     e.preventDefault();
-    if (app.state === 'menu') drop.classList.add('over');
+    if (canDrop()) {
+      if (app.state === 'menu') setState('file');
+      drop.classList.add('over');
+    }
   });
   window.addEventListener('dragleave', (e) => {
     if (!e.relatedTarget) drop.classList.remove('over');
@@ -1032,91 +1421,152 @@ function wireMenu() {
   window.addEventListener('drop', (e) => {
     e.preventDefault();
     drop.classList.remove('over');
-    if (app.state !== 'menu') return;
+    if (!canDrop()) return;
     const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
     if (f) playFile(f);
   });
+
+  // Video setup.
+  const link = $('yt-input');
+  link.addEventListener('input', onLinkInput);
   $('yt-form').addEventListener('submit', (e) => {
     e.preventDefault();
-    playYouTube($('yt-input').value);
+    onLinkInput();
+    if (!$('live-start').disabled) startYouTube();
+  });
+  $('live-start').addEventListener('click', startYouTube);
+  $('yt-file').addEventListener('click', () => setState('file'));
+  $('yt-demo').addEventListener('click', playDemo);
+  const octave = { values: [-1, 0, 1], label: (v) => OCTAVE_TEXT[v], get: () => app.octave, set: setOctave };
+  selectorViews.push(selector($('octave-row'), octave), selector($('pause-octave-row'), octave));
+  // Capture delay: each step nudges the live session's delay.
+  const delayRow = $('pause-delay-row');
+  delayRow.addEventListener('step', (e) => { if (!e.detail.wrap) nudgeLatency(e.detail.dir); });
+  for (const [k, chev] of Array.from(delayRow.querySelectorAll('.chev')).entries()) {
+    chev.addEventListener('click', (e) => { e.stopPropagation(); nudgeLatency(k ? 1 : -1); delayRow.focus(); });
+  }
+
+  // Mode select.
+  $('mode').querySelector('[data-stage-confirm]').addEventListener('click', () => {
+    setMode(stage.value);
+    setState('menu');
   });
 
-  for (const r of document.querySelectorAll('input[name=mode]')) {
-    r.checked = r.value === app.settings.mode;
-    r.addEventListener('change', () => {
-      app.settings.mode = currentMode();
-      saveSettings();
+  // Settings.
+  const latency = $('latency');
+  setLatency(app.settings.latency);
+  latency.addEventListener('input', () => setLatency(Number(latency.value)));
+  selectorViews.push(
+    selector($('sfx-row'), { values: [false, true], label: (v) => (v ? 'On' : 'Off'), get: () => app.settings.sfx, set: setSfx }),
+    selector($('calm-row'), { values: [false, true], label: (v) => (v ? 'On' : 'Off'), get: () => app.settings.calm, set: setCalmVisuals }),
+    selector($('quality-row'), {
+      values: QUALITY_IDS, label: (v) => v, get: () => app.settings.quality,
+      set: (v) => {
+        app.settings.quality = v;
+        saveSettings();
+        if (app.view && app.view.gfx.renderer) {
+          app.view.setQuality(v);
+          stats.quality = app.view.gfx.qualityName;
+          app.redraw = 2;
+        }
+      },
+    }),
+  );
+  const videoSel = { values: ['mini', 'hidden'], label: (v) => (v === 'hidden' ? 'Hidden' : 'Mini'), get: () => app.settings.video, set: setVideoMode };
+  selectorViews.push(selector($('video-row'), videoSel), selector($('pause-video-row'), videoSel));
+  $('defaults-btn').addEventListener('click', () => {
+    setLatency(0);
+    setSfx(true);
+    setCalmVisuals(reducedMotion());
+    setVideoMode('mini');
+    app.settings.quality = 'high';
+    if (app.view && app.view.gfx.renderer) app.view.setQuality('high');
+    saveSettings();
+    refreshSelectors();
+    note('info', 'Defaults restored', 'Latency 0 ms, hit sounds on, quality high.');
+  });
+  for (const id of ['settings', 'howto']) {
+    for (const [i, t] of Array.from($(id).querySelectorAll('[role=tab]')).entries()) t.addEventListener('click', () => showTab(id, i));
+  }
+  $('settings').addEventListener('focusin', settingsInfo);
+
+  // Back buttons.
+  for (const b of document.querySelectorAll('[data-back]')) {
+    b.addEventListener('click', () => {
+      const id = b.closest('.screen').id;
+      back(id);
     });
   }
-  const latency = $('latency'), latencyOut = $('latency-out');
-  latency.value = String(app.settings.latency);
-  latencyOut.textContent = `${app.settings.latency} ms`;
-  latency.addEventListener('input', () => {
-    app.settings.latency = Number(latency.value);
-    latencyOut.textContent = `${app.settings.latency} ms`;
-    if (app.player) app.player.offset = app.settings.latency / 1000;
-    saveSettings();
-  });
-  const calm = $('calm');
-  calm.checked = app.settings.calm;
-  calm.addEventListener('change', () => {
-    app.settings.calm = calm.checked;
-    app.juice.calm = calm.checked;
-    if (app.view) app.view.calm = calm.checked;
-    saveSettings();
-  });
-  const sfxBox = $('sfx');
-  sfxBox.checked = app.settings.sfx;
-  sfxBox.addEventListener('change', () => {
-    app.settings.sfx = sfxBox.checked;
-    if (app.sfx) app.sfx.enabled = sfxBox.checked;
-    saveSettings();
-  });
-  const quality = $('quality');
-  quality.value = app.settings.quality;
-  quality.addEventListener('change', () => {
-    app.settings.quality = quality.value;
-    saveSettings();
-    if (app.view && app.view.gfx.renderer) {
-      app.view.setQuality(quality.value);
-      stats.quality = app.view.gfx.qualityName;
-    }
-  });
 
-  dock.wire({ start: startYouTube, back: toMenu, octave: setOctave, nudge: nudgeLatency });
-
+  // Pause and results.
   $('resume-btn').addEventListener('click', resume);
   $('pause-restart-btn').addEventListener('click', restart);
+  $('pause-settings-btn').addEventListener('click', openSettings);
   $('pause-menu-btn').addEventListener('click', toMenu);
   $('restart-btn').addEventListener('click', restart);
   $('menu-btn').addEventListener('click', toMenu);
+  $('hud-pause').addEventListener('click', (e) => { e.stopPropagation(); pause(); });
+
+  // Focus manager: per-screen back, tabs and sideways moves.
+  focus.register('menu', {});
+  focus.register('file', { back: () => back('file') });
+  focus.register('video', { back: () => back('video') });
+  focus.register('mode', { back: () => back('mode'), side: (dir) => { stage.step(dir); return true; } });
+  focus.register('settings', { back: () => back('settings'), tab: (dir) => tabStep('settings', dir) });
+  focus.register('howto', { back: () => back('howto'), tab: (dir) => tabStep('howto', dir) });
+  focus.register('loading', { back: cancelLoad });
+  focus.register('pause', { back: resume });
+  focus.register('results', { back: toMenu });
 
   window.addEventListener('keydown', (e) => {
-    if (e.target instanceof HTMLInputElement && e.target.type === 'text') return;
-    if (e.code === 'Escape') {
-      if (app.state === 'play') pause();
-      else if (app.state === 'paused') resume();
-    } else if (e.code === 'KeyR' && !e.repeat && (app.state === 'play' || app.state === 'paused' || app.state === 'results')) {
-      e.preventDefault();
-      restart();
-    } else if (e.code === 'KeyP' && DEBUG && app.state === 'play') {
-      window.__hypersurf.autopilot = !app.autopilot;
-    } else if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && app.live && app.state === 'play') {
-      setOctave(app.octave + (e.code === 'BracketLeft' ? -1 : 1));
-    } else if ((e.code === 'Minus' || e.code === 'Equal') && app.live && app.state === 'play') {
-      nudgeLatency(e.code === 'Minus' ? -1 : 1);
+    const inText = e.target instanceof HTMLInputElement && e.target.type === 'text';
+    // Toasts: their buttons work natively; Escape dismisses.
+    if (e.target.closest && e.target.closest('.toast')) {
+      if (e.code === 'Escape') { e.target.closest('.toast').querySelector('.t-close').click(); focus.show(focus.root); e.preventDefault(); }
+      return;
     }
+    if (app.state === 'play') {
+      if (e.code === 'Escape') pause();
+      else if (e.code === 'KeyR' && !e.repeat) { e.preventDefault(); restart(); }
+      else if (e.code === 'KeyP' && DEBUG) window.__hypersurf.autopilot = !app.autopilot;
+      else if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && app.live) setOctave(app.octave + (e.code === 'BracketLeft' ? -1 : 1));
+      else if ((e.code === 'Minus' || e.code === 'Equal') && app.live) nudgeLatency(e.code === 'Minus' ? -1 : 1);
+      else if (e.code === 'KeyV' && !e.repeat && app.live && app.live.yt) setVideoMode(app.settings.video === 'hidden' ? 'mini' : 'hidden');
+      return;
+    }
+    if (!inText && e.code === 'KeyR' && !e.repeat && (app.state === 'paused' || app.state === 'results')) { e.preventDefault(); restart(); return; }
+    if (!inText && e.code === 'KeyV' && !e.repeat && app.live && app.live.yt) { setVideoMode(app.settings.video === 'hidden' ? 'mini' : 'hidden'); return; }
+    focus.key(e);
   });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) pause();
+    else app.redraw = 2;
   });
-  window.addEventListener('resize', () => app.view && app.view.gfx.renderer && app.view.resize());
+  window.addEventListener('resize', () => {
+    if (app.view && app.view.gfx.renderer) app.view.resize();
+    app.redraw = 2;
+  });
   app.input.onPointerLockLost = pause;
   app.input.attach();
   // Clicking the view during play takes the pointer lock (browsers need a gesture).
   $('view').addEventListener('click', () => {
     if (app.state === 'play') app.input.requestLock();
   });
+
+  // Initial state of the toggles.
+  setMode(currentMode());
+  setSfx(app.settings.sfx);
+  setCalmVisuals(app.settings.calm);
+  mini.setMode(app.settings.video);
+  mini.setCorner(app.settings.corner);
+  refreshSelectors();
+}
+
+/** Esc / B / BACK on a menu screen. */
+function back(id) {
+  if (id === 'settings') closeSettings();
+  else if (id === 'video') { if (!app.busy) { leaveLive(); $('yt-input').value = ''; videoStatus(''); canStart(false); setState('menu'); } }
+  else setState('menu');
 }
 
 function wireErrors() {
@@ -1126,20 +1576,21 @@ function wireErrors() {
 
 async function boot() {
   wireErrors();
-  wireMenu();
+  wireUi();
   setState('menu');
-  if (LIVE_DEMO) message('?live=demo: the demo plays through the live listening path, as a YouTube video would.');
+  if (LIVE_DEMO) note('info', 'Live path test', '?live=demo: the demo plays through the live listening path, as a YouTube video would.');
   app.view = new GameView($('view'), { forceWebGL: params.get('webgl') === '1', quality: app.settings.quality });
   app.viewReady = app.view.init().then(() => {
     stats.backend = app.view.backend;
     stats.quality = app.view.gfx.qualityName;
     app.view.calm = app.settings.calm;
     app.view.gfx.renderer.setAnimationLoop(frame);
+    if (app.state === 'mode') stage.show(currentMode(), app.view.gfx);
     return true;
   }, (err) => {
     console.warn('renderer unavailable', err);
     stats.errors.push(`renderer: ${err && err.message ? err.message : err}`);
-    message('This browser cannot run the 3D view (it needs WebGPU or WebGL2).');
+    note('error', 'No 3D view', 'This browser cannot run the 3D view (it needs WebGPU or WebGL2).', { focus: false });
     return false;
   });
 }

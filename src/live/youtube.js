@@ -6,7 +6,8 @@
 //                 only while the video is playing and its time advances
 //                 (buffering, pauses and ads hold it); jumps are seeks
 //   loadIframeApi the API script, loaded once
-//   YouTubePlayer a player docked in its own element at 480×270 or more,
+//   YouTubePlayer a player filling its own host element (the mini player,
+//                 356×200 or more, or collapsed when the player hides it),
 //                 never covered by anything; the game only plays, pauses,
 //                 seeks and reads the time and state
 //
@@ -136,7 +137,7 @@ export function loadIframeApi() {
 }
 
 /**
- * A YouTube player in `host` (an element in its own docked panel). Events:
+ * A YouTube player in `host` (the mini player's box). Events:
  * onState(state) and onError(code, message). Playback is only started
  * while at least half of it is on screen.
  */
@@ -151,7 +152,7 @@ export class YouTubePlayer {
     this.handlers = { onState, onError };
   }
 
-  /** Share of the player inside the viewport of a visible page (nothing is ever laid over it). */
+  /** Share of the player inside the viewport of a visible page (nothing is ever laid over it; a hidden player counts as its 1px box). */
   get visible() {
     const f = this.host.querySelector('iframe');
     if (!f || document.visibilityState !== 'visible') return 0;
@@ -170,8 +171,8 @@ export class YouTubePlayer {
     this.host.replaceChildren(mount);
     await new Promise((resolve) => {
       this.player = new YT.Player(mount, {
-        width: 480,
-        height: 270,
+        width: '100%',
+        height: '100%',
         videoId: this.videoId,
         playerVars: { enablejsapi: 1, origin: location.origin, playsinline: 1, rel: 0 },
         events: {

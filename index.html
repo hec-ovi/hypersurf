@@ -5,10 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>hypersurf</title>
   <meta name="description" content="Ride a neon track built from your music. A browser game inspired by Audiosurf 2.">
-  <meta name="theme-color" content="#05060A">
+  <meta name="theme-color" content="#0b1719">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2305060A'/%3E%3Cpath d='M5 23 L16 7 L27 23' fill='none' stroke='%2319E0A0' stroke-width='3' stroke-linejoin='round'/%3E%3Cpath d='M10 23 L16 14 L22 23' fill='none' stroke='%23FF1F4B' stroke-width='2.5' stroke-linejoin='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Oxanium:wght@500;600;700;800&family=Rajdhani:wght@500;600;700&display=swap">
   <link rel="stylesheet" href="styles.css">
-  <link rel="stylesheet" href="live.css">
+  <link rel="stylesheet" href="hud.css">
   <script type="importmap">
     {
       "imports": {
@@ -21,160 +24,436 @@
   </script>
   <script type="module" src="src/main.js"></script>
 </head>
-<body data-state="boot">
+<body data-state="boot" data-video="mini" data-corner="br">
   <canvas id="view" aria-label="Game view"></canvas>
+  <canvas id="sky" aria-hidden="true"></canvas>
+  <div id="shade" aria-hidden="true"></div>
 
-  <div id="hud" class="hud" hidden>
-    <div class="hud-progress"><div data-hud="progress"></div></div>
-    <div class="hud-top">
-      <div class="hud-title" data-hud="title"></div>
-      <div class="hud-score">
-        <div class="score" data-hud="score">0</div>
-        <div class="mult" data-hud="mult"></div>
+  <!-- ============================================================ main menu -->
+  <main id="menu" class="screen menu" hidden>
+    <div class="emblem-col">
+      <div class="emblem">
+        <svg class="rings" viewBox="0 0 400 400" aria-hidden="true">
+          <defs>
+            <radialGradient id="em-core" cx="50%" cy="50%" r="50%">
+              <stop offset="0" stop-color="#b8fff0" stop-opacity=".42"/>
+              <stop offset=".38" stop-color="#19e0a0" stop-opacity=".22"/>
+              <stop offset=".72" stop-color="#0c6f78" stop-opacity=".2"/>
+              <stop offset="1" stop-color="#0a3a48" stop-opacity="0"/>
+            </radialGradient>
+            <radialGradient id="em-halo" cx="50%" cy="50%" r="50%">
+              <stop offset=".55" stop-color="#3fe0d0" stop-opacity="0"/>
+              <stop offset=".74" stop-color="#3fe0d0" stop-opacity=".13"/>
+              <stop offset="1" stop-color="#3fe0d0" stop-opacity="0"/>
+            </radialGradient>
+            <linearGradient id="em-arc" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#8ff7ee"/><stop offset=".5" stop-color="#3fe0d0"/><stop offset="1" stop-color="#1f8fff"/>
+            </linearGradient>
+            <filter id="em-glow" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+            <filter id="em-soft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="7"/></filter>
+          </defs>
+          <circle cx="200" cy="200" r="198" fill="url(#em-halo)"/>
+          <circle cx="200" cy="200" r="192" fill="none" stroke="#78e1da" stroke-opacity=".3" stroke-width="1"/>
+          <g class="spin-rev"><circle cx="200" cy="200" r="184" fill="none" stroke="#3fe0d0" stroke-opacity=".5" stroke-width="1.5" stroke-dasharray="1 4"/></g>
+          <g class="spin-slow">
+            <circle cx="200" cy="200" r="168" fill="none" stroke="url(#em-arc)" stroke-width="3" pathLength="100" stroke-dasharray="30 70" stroke-dashoffset="8" filter="url(#em-glow)"/>
+            <circle cx="200" cy="200" r="168" fill="none" stroke="#8ff7ee" stroke-width="1.2" pathLength="100" stroke-dasharray="7 93" stroke-dashoffset="-50" opacity=".75"/>
+            <circle cx="200" cy="200" r="160" fill="none" stroke="#3fe0d0" stroke-opacity=".38" stroke-width="2.4" stroke-linecap="round" stroke-dasharray="0.1 5.4"/>
+          </g>
+          <circle cx="200" cy="200" r="132" fill="none" stroke="#19e0a0" stroke-opacity=".35" stroke-width="10" filter="url(#em-soft)"/>
+          <circle cx="200" cy="200" r="132" fill="none" stroke="#7dffd6" stroke-opacity=".5" stroke-width="1.2"/>
+          <circle cx="200" cy="200" r="126" fill="url(#em-core)"/>
+          <circle cx="200" cy="200" r="104" fill="none" stroke="#3fe0d0" stroke-opacity=".16" stroke-width="1"/>
+          <path d="M112 150 A 100 100 0 0 1 258 112" fill="none" stroke="#dffff8" stroke-opacity=".6" stroke-width="1.3" filter="url(#em-glow)"/>
+        </svg>
+        <div class="wordmark">
+          <div class="rule top"></div>
+          <h1 class="wm" data-text="HYPERSURF">HYPERSURF</h1>
+          <div class="rule bot"><span class="gem" aria-hidden="true"><svg viewBox="0 0 8 12"><path d="M7 1 2 6l5 5" fill="none" stroke="currentColor" stroke-width="1.4"/></svg><i></i><svg viewBox="0 0 8 12"><path d="M1 1l5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.4"/></svg></span></div>
+          <p class="tag">Ride the music</p>
+        </div>
+        <div class="flare" aria-hidden="true"></div>
       </div>
     </div>
-    <div class="hud-grid">
-      <div class="grid" data-hud="grid"></div>
-      <div class="timer"><div data-hud="timer"></div></div>
+
+    <nav class="stack-col" aria-label="Main menu">
+      <div class="stack">
+        <button class="cb" type="button" id="demo-btn" data-nav data-default style="--i:0"><span class="lbl">Play demo</span><span class="meta">2:31 · 128 BPM</span></button>
+        <button class="cb" type="button" id="file-btn" data-nav style="--i:1"><span class="lbl">Play audio file</span><span class="meta">MP3 · WAV · OGG · FLAC</span></button>
+        <button class="cb" type="button" id="video-btn" data-nav style="--i:2"><span class="lbl">Play a YouTube video</span><span class="meta">Live listen</span></button>
+        <button class="cb" type="button" id="mode-btn" data-nav data-step style="--i:3" aria-describedby="mode-now"><span class="lbl">Mode</span><span class="meta sel-inline"><span class="chev" data-icon="chevL"></span><b id="mode-now">Mono</b><span class="chev" data-icon="chevR"></span></span></button>
+        <button class="cb" type="button" id="settings-btn" data-nav style="--i:4"><span class="lbl">Settings</span></button>
+        <div class="quit-gap"></div>
+        <button class="cb" type="button" id="howto-btn" data-nav style="--i:5"><span class="lbl">How to play</span></button>
+      </div>
+    </nav>
+
+    <div class="topbar">
+      <div class="best-mini"><span class="micro">Demo best</span><b class="num" id="menu-best">—</b></div>
+      <div class="ringbtn" aria-hidden="true">
+        <svg class="ring" viewBox="0 0 74 74"><g class="seg"><circle cx="37" cy="37" r="34" fill="none" stroke="currentColor" stroke-width="2" pathLength="360" stroke-dasharray="70 20"/></g><circle class="inner" cx="37" cy="37" r="28" fill="none" stroke="rgba(120,225,218,.3)" stroke-width="1"/></svg>
+        <span data-icon="trophy"></span>
+      </div>
     </div>
-    <div class="toast" data-hud="toast" aria-live="polite"></div>
-  </div>
 
-  <main id="menu" class="screen" hidden>
-    <div class="menu-card">
-      <header class="brand">
-        <h1>hyper<span>surf</span></h1>
-        <p>Ride a track built from your music. Intense parts run downhill and fast, calm parts climb, and blocks land on the beats.</p>
-      </header>
-
-      <section class="sources" aria-label="Choose a song">
-        <button id="demo-btn" class="source primary" type="button">
-          <span class="source-title">Play the demo</span>
-          <span class="source-sub">A 2½-minute track made in your browser</span>
-        </button>
-
-        <label id="drop" class="source drop" tabindex="0">
-          <span class="source-title">Play an audio file</span>
-          <span class="source-sub">Drop it here or <u>choose a file</u> (MP3, WAV, OGG, FLAC, M4A)</span>
-          <input id="file-input" type="file" accept="audio/*,.mp3,.wav,.ogg,.oga,.flac,.m4a,.aac,.opus,.webm">
-        </label>
-
-        <form id="yt-form" class="source yt" autocomplete="off">
-          <label class="source-title" for="yt-input">Play along with a YouTube video</label>
-          <div class="yt-row">
-            <input id="yt-input" type="text" inputmode="url" placeholder="Paste a link or video ID" spellcheck="false">
-            <button type="submit">Go</button>
-          </div>
-        </form>
-      </section>
-
-      <fieldset class="modes">
-        <legend>Mode</legend>
-        <label><input type="radio" name="mode" value="mono" checked><span><b>Mono</b> Collect blocks into 3×7 grid matches. Greys erase a block.</span></label>
-        <label><input type="radio" name="mode" value="ninja"><span><b>Ninja</b> Faster and denser. Dodge spikes: one wipes your grid.</span></label>
-        <label><input type="radio" name="mode" value="casual"><span><b>Casual</b> Slower, a longer match timer and safe shoulders.</span></label>
-      </fieldset>
-
-      <details class="settings">
-        <summary>Settings</summary>
-        <label class="row">
-          <span>Audio latency <output id="latency-out">0 ms</output></span>
-          <input id="latency" type="range" min="-150" max="300" step="5" value="0">
-        </label>
-        <p class="hint">Raise it if blocks arrive before you hear them (Bluetooth headphones often need 150–250 ms).</p>
-        <label class="row check"><input id="calm" type="checkbox"> <span>Calm visuals: no beat pulses, softer flashes, no lens effects</span></label>
-        <label class="row check"><input id="sfx" type="checkbox" checked> <span>Hit sounds, in time with the beat</span></label>
-        <label class="row">
-          <span>Quality</span>
-          <select id="quality">
-            <option value="high">High</option>
-            <option value="medium">Medium</option>
-            <option value="low">Low</option>
-          </select>
-        </label>
-      </details>
-
-      <p id="menu-msg" class="msg" role="status" aria-live="polite"></p>
-
-      <footer class="foot">
-        <p><b>Controls</b> mouse · ←/→ or A/D · gamepad · touch drag. Esc pauses, R restarts.</p>
-        <p>Inspired by <a href="https://en.wikipedia.org/wiki/Audiosurf_2" target="_blank" rel="noopener">Audiosurf 2</a> (Dylan Fitterer). Not affiliated.</p>
-      </footer>
+    <div class="dia-row">
+      <button class="dia" type="button" id="fs-btn" data-nav aria-label="Fullscreen" title="Fullscreen" data-icon="fullscreen"></button>
+      <button class="dia" type="button" id="sfx-btn" data-nav aria-label="Hit sounds" title="Hit sounds" aria-pressed="true" data-icon="speaker"><i class="pip"></i></button>
+      <button class="dia" type="button" id="calm-btn" data-nav aria-label="Calm visuals" title="Calm visuals" aria-pressed="false" data-icon="wave"><i class="pip"></i></button>
+      <a class="dia" id="src-btn" data-nav href="https://github.com/hec-ovi/hypersurf" target="_blank" rel="noopener" aria-label="Source code" title="Source code" data-icon="code"></a>
     </div>
+
+    <div class="keys" aria-hidden="true">
+      <span><i class="kbd">↑</i><i class="kbd">↓</i> Select</span>
+      <span><i class="kbd">↵</i> Confirm</span>
+      <span class="pad-only"><i class="kbd">A</i> Confirm</span>
+    </div>
+    <a class="credit" href="https://en.wikipedia.org/wiki/Audiosurf_2" target="_blank" rel="noopener">Inspired by Audiosurf 2 (Dylan Fitterer) · not affiliated</a>
   </main>
 
-  <section id="loading" class="screen" hidden>
-    <div class="panel">
-      <h2 data-load="title">Analysing</h2>
-      <div class="bar"><div data-load="bar"></div></div>
-      <p class="muted" data-load="stage">Starting…</p>
-    </div>
-  </section>
-
-  <section id="pause" class="screen" hidden>
-    <div class="panel">
-      <h2>Paused</h2>
+  <!-- ============================================================ audio file -->
+  <section id="file" class="screen center" hidden aria-labelledby="file-title">
+    <div class="panel dialog">
+      <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+      <header class="head">
+        <h2 class="title" id="file-title" data-decode>Audio file</h2>
+        <p class="sub">Stays on your device · nothing is uploaded</p>
+      </header>
+      <div class="drop" id="drop">
+        <span class="reticle" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+        <span class="drop-ico" aria-hidden="true">
+          <svg class="r" viewBox="0 0 84 84"><circle cx="42" cy="42" r="40" fill="none" stroke="currentColor" stroke-opacity=".5" stroke-width="1" stroke-dasharray="2 5"/><circle cx="42" cy="42" r="34" fill="none" stroke="currentColor" stroke-opacity=".3" stroke-width="1"/></svg>
+          <span data-icon="file"></span>
+        </span>
+        <h3 class="drop-title"><span class="desk">Drop a song here</span><span class="touch">Choose a song</span></h3>
+        <span class="or">or</span>
+        <button class="act" type="button" id="browse-btn" data-nav data-default>Browse files</button>
+        <p class="formats">MP3 · WAV · OGG · FLAC · M4A</p>
+        <input id="file-input" type="file" accept="audio/*,.mp3,.wav,.ogg,.oga,.flac,.m4a,.aac,.opus,.webm" hidden>
+      </div>
       <div class="actions">
-        <button id="resume-btn" class="primary" type="button">Resume</button>
-        <button id="pause-restart-btn" type="button">Restart</button>
-        <button id="pause-menu-btn" type="button">Menu</button>
+        <button class="act" type="button" data-back data-nav><span data-icon="chevL"></span>Back</button>
       </div>
     </div>
   </section>
 
-  <section id="results" class="screen" hidden>
-    <div class="panel results">
-      <p class="muted" data-res="mode"></p>
-      <h2 data-res="title"></h2>
-      <dl class="tally">
-        <div><dt>Score</dt><dd data-res="raw"></dd></div>
-      </dl>
-      <ul class="bonuses" data-res="bonuses"></ul>
-      <dl class="tally final">
-        <div><dt>Final</dt><dd data-res="final"></dd></div>
-      </dl>
-      <p class="best" data-res="best"></p>
-      <p class="muted small" data-res="stats"></p>
+  <!-- ============================================================ video setup -->
+  <section id="video" class="screen center" hidden aria-labelledby="video-title">
+    <div class="panel dialog video-panel">
+      <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+      <header class="head">
+        <h2 class="title" id="video-title" data-decode>Video</h2>
+        <p class="sub">Play along with a YouTube video · live listen</p>
+      </header>
+      <form class="field" id="yt-form" autocomplete="off">
+        <label class="eyebrow" for="yt-input">Video link</label>
+        <div class="input"><span data-icon="link"></span><input id="yt-input" type="text" inputmode="url" placeholder="Paste a link or video ID" spellcheck="false" data-nav></div>
+        <p class="status" id="yt-status" role="status" aria-live="polite"></p>
+      </form>
+      <div class="set-rows compact can-live">
+        <div class="srow" id="octave-row" tabindex="0" data-nav data-step role="spinbutton" aria-label="Blocks per beat" aria-valuetext="1">
+          <span class="name">Blocks per beat<small>Fewer blocks for dense songs, more for slow ones. [ and ] in play.</small></span>
+          <span class="sel"><span class="chev" data-icon="chevL"></span><output data-octave-out>1</output><span class="chev" data-icon="chevR"></span></span>
+        </div>
+      </div>
+      <p class="note can-live">Start asks to share this tab. Keep “Also share tab audio” on: the game listens to the video’s sound to find the beat. Nothing is recorded, stored or sent.</p>
+      <div class="info no-live">
+        <span class="micro">Information</span>
+        <p id="yt-unsupported">Live listen needs tab audio capture, which this browser does not offer. Use Chrome or Edge on a computer, or play a file or the demo here.</p>
+      </div>
+      <p class="legal">Video plays in YouTube’s own player · <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener">YouTube Terms</a> · <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Google Privacy Policy</a><br>You are responsible for what you play.</p>
       <div class="actions">
-        <button id="restart-btn" class="primary" type="button">Play again <kbd>R</kbd></button>
-        <button id="menu-btn" type="button">Menu</button>
+        <button class="act" type="button" data-back data-nav><span data-icon="chevL"></span>Back</button>
+        <button class="act can-live" type="button" id="live-start" data-nav disabled>Start<span data-icon="chevR"></span></button>
+        <button class="act no-live" type="button" id="yt-file" data-nav>Play a file</button>
+        <button class="act no-live" type="button" id="yt-demo" data-nav>Play demo</button>
       </div>
     </div>
   </section>
 
-  <!-- Live mode (YouTube): the player docked beside the game, never under it. -->
-  <aside id="live-dock" class="live-dock" hidden aria-label="YouTube video">
-    <div class="live-player" data-live="player"></div>
-    <div class="live-panel">
-      <p class="live-status" data-live="status" role="status" aria-live="polite"></p>
-      <div class="live-actions">
-        <button id="live-start" class="primary" type="button" disabled>Start</button>
-        <button id="live-back" type="button">Back</button>
-      </div>
-      <div class="live-octave" data-live="octave" role="group" aria-label="Block grid">
-        <span>Blocks per beat</span>
-        <button type="button" data-octave="-1" title="Every other beat ( [ )">½</button>
-        <button type="button" data-octave="0" aria-pressed="true">1</button>
-        <button type="button" data-octave="1" title="Twice per beat ( ] )">2</button>
-      </div>
-      <div class="live-timing" role="group" aria-label="Timing">
-        <span>Capture delay</span>
-        <button type="button" data-nudge="-1" title="Blocks come before the beat: less delay ( - )" aria-label="Less delay">−</button>
-        <output data-live="latency">60 ms</output>
-        <button type="button" data-nudge="1" title="Blocks come after the beat: more delay ( = )" aria-label="More delay">+</button>
-      </div>
-      <p class="live-note">Start asks to share this tab: choose it and keep “Also share tab audio” on. The game listens to the video’s sound to find the beat, as it plays. Nothing is recorded, stored or sent.</p>
-      <p class="live-note">Video by YouTube. By playing it you agree to the <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener">YouTube Terms of Service</a>; see also the <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Google Privacy Policy</a>. You are responsible for what you play.</p>
+  <!-- ============================================================ mode select (3D stage) -->
+  <section id="mode" class="screen stage-screen" hidden aria-labelledby="mode-title">
+    <header class="head stage-head">
+      <h2 class="title" id="mode-title" data-decode>Select mode</h2>
+      <p class="sub">Same track · different rules</p>
+    </header>
+    <div class="stage-area" data-stage-drag aria-hidden="true">
+      <span class="stage-fallback" data-stage-fallback></span>
     </div>
-  </aside>
-
-  <section id="live-ready" class="screen" hidden>
-    <div class="panel">
-      <h2>Play along</h2>
-      <p class="muted" data-live="hint">Press Start beside the video.</p>
+    <button class="stage-arrow prev" type="button" data-stage-prev aria-label="Previous mode" data-icon="chevL"></button>
+    <button class="stage-arrow next" type="button" data-stage-next aria-label="Next mode" data-icon="chevR"></button>
+    <div class="stage-info">
+      <p class="eyebrow cyan" data-stage-index>01 / 03</p>
+      <h3 class="stage-name" data-stage-name aria-live="polite">Mono</h3>
+      <p class="stage-desc" data-stage-desc></p>
+      <ul class="rows stage-rows" data-stage-rows></ul>
+    </div>
+    <div class="stage-gauges" data-stage-gauges></div>
+    <div class="stage-foot">
+      <div class="stage-icons" role="radiogroup" aria-label="Modes" data-stage-icons></div>
+      <div class="actions">
+        <button class="act" type="button" data-back data-nav><span data-icon="chevL"></span>Back</button>
+        <button class="act" type="button" data-stage-confirm data-nav data-default>Confirm<span data-icon="chevR"></span></button>
+      </div>
     </div>
   </section>
 
+  <!-- ============================================================ settings -->
+  <section id="settings" class="screen center" hidden aria-labelledby="settings-title">
+    <div class="panel dialog">
+      <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+      <header class="head">
+        <h2 class="title" id="settings-title" data-decode>Settings</h2>
+        <div class="tabs" role="tablist" aria-label="Settings">
+          <button class="tab" type="button" role="tab" id="tab-audio" aria-controls="pane-audio" aria-selected="true" data-nav>Audio</button>
+          <button class="tab" type="button" role="tab" id="tab-visuals" aria-controls="pane-visuals" aria-selected="false" data-nav>Visuals</button>
+          <button class="tab" type="button" role="tab" id="tab-about" aria-controls="pane-about" aria-selected="false" data-nav>About</button>
+        </div>
+      </header>
+      <div class="pane" id="pane-audio" role="tabpanel" aria-labelledby="tab-audio">
+        <p class="sub">Line the blocks up with what you hear</p>
+        <div class="set-rows">
+          <div class="srow latency-row" data-info="Bluetooth headphones often need 150–250 ms. Raise it if blocks arrive before you hear them. The offset is saved in this browser and applies to every song.">
+            <span class="name">Audio latency<small>Delay the track to match your speakers</small></span>
+            <output class="val" id="latency-out">+0 MS</output>
+            <div class="slider">
+              <span class="micro">−150</span>
+              <span class="range-wrap"><input id="latency" class="hr" type="range" min="-150" max="300" step="5" value="0" data-nav aria-label="Audio latency" data-default><i class="zero" aria-hidden="true"></i></span>
+              <span class="micro">+300</span>
+            </div>
+            <div class="beatcheck" aria-hidden="true">
+              <span class="micro">Beat check</span>
+              <span class="lane"><i class="target"></i><i class="runner"></i></span>
+              <i class="beat"></i>
+            </div>
+          </div>
+          <div class="srow" tabindex="0" data-nav data-step role="spinbutton" id="sfx-row" data-info="Soft plucks on the beat grid when you catch blocks, a chord when a match cashes in.">
+            <span class="name">Hit sounds<small>Plucks and chords in time with the beat</small></span>
+            <span class="sel"><span class="chev" data-icon="chevL"></span><output>On</output><span class="chev" data-icon="chevR"></span></span>
+          </div>
+        </div>
+      </div>
+      <div class="pane" id="pane-visuals" role="tabpanel" aria-labelledby="tab-visuals" hidden>
+        <p class="sub">Comfort and performance</p>
+        <div class="set-rows">
+          <div class="srow" tabindex="0" data-nav data-step role="spinbutton" id="calm-row" data-info="No beat pulses, softer flashes, no lens effects, and the menus hold still. On by default when your system asks for reduced motion.">
+            <span class="name">Calm visuals<small>No beat pulses, softer flashes, no lens effects</small></span>
+            <span class="sel"><span class="chev" data-icon="chevL"></span><output>Off</output><span class="chev" data-icon="chevR"></span></span>
+          </div>
+          <div class="srow" tabindex="0" data-nav data-step role="spinbutton" id="quality-row" data-info="Lower it if the frame rate drops. The game also scales resolution on its own.">
+            <span class="name">Quality<small>Anti-aliasing, bloom and scenery detail</small></span>
+            <span class="sel"><span class="chev" data-icon="chevL"></span><output>High</output><span class="chev" data-icon="chevR"></span></span>
+          </div>
+          <div class="srow" tabindex="0" data-nav data-step role="spinbutton" id="video-row" data-info="How a YouTube video shows while you play: a small player in a corner you can drag, or hidden. Hidden keeps it playing. Press V in play to switch.">
+            <span class="name">Video<small>The YouTube player during play</small></span>
+            <span class="sel"><span class="chev" data-icon="chevL"></span><output>Mini</output><span class="chev" data-icon="chevR"></span></span>
+          </div>
+        </div>
+      </div>
+      <div class="pane" id="pane-about" role="tabpanel" aria-labelledby="tab-about" hidden>
+        <p class="sub">hypersurf</p>
+        <ul class="rows links">
+          <li><a data-nav href="https://en.wikipedia.org/wiki/Audiosurf_2" target="_blank" rel="noopener" data-info="hypersurf is a fan-made game inspired by Audiosurf 2 by Dylan Fitterer. It is not affiliated with it.">Inspired by Audiosurf 2 (Dylan Fitterer) · not affiliated<span data-icon="chevR"></span></a></li>
+          <li><a data-nav href="https://github.com/hec-ovi/hypersurf" target="_blank" rel="noopener" data-info="The whole game is open source.">Source code<span data-icon="chevR"></span></a></li>
+          <li><a data-nav href="https://github.com/hec-ovi/hypersurf/blob/main/docs/research.md" target="_blank" rel="noopener" data-info="How the analysis, the rules and the visuals were designed.">Research notes<span data-icon="chevR"></span></a></li>
+          <li><a data-nav href="https://www.youtube.com/t/terms" target="_blank" rel="noopener" data-info="Videos play in YouTube’s own embedded player, under its terms.">YouTube Terms of Service<span data-icon="chevR"></span></a></li>
+          <li><a data-nav href="https://policies.google.com/privacy" target="_blank" rel="noopener" data-info="The embedded YouTube player is covered by Google’s privacy policy.">Google Privacy Policy<span data-icon="chevR"></span></a></li>
+          <li class="plain" tabindex="0" data-nav data-info="Only your best scores and these settings, in this browser. Audio is never stored or sent anywhere.">Privacy: what this game stores</li>
+        </ul>
+        <p class="legal">You are responsible for the content you play.</p>
+      </div>
+      <div class="info">
+        <span class="micro">Information</span>
+        <p id="settings-info"></p>
+      </div>
+      <div class="actions">
+        <button class="act" type="button" data-back data-nav><span data-icon="chevL"></span>Back</button>
+        <button class="act" type="button" id="defaults-btn" data-nav>Defaults</button>
+      </div>
+      <p class="hints micro" aria-hidden="true"><i class="kbd">Q</i><i class="kbd">E</i> Tabs · <i class="kbd">←</i><i class="kbd">→</i> Change</p>
+    </div>
+  </section>
+
+  <!-- ============================================================ how to play -->
+  <section id="howto" class="screen center" hidden aria-labelledby="howto-title">
+    <div class="panel dialog">
+      <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+      <header class="head">
+        <h2 class="title" id="howto-title" data-decode>How to play</h2>
+        <div class="tabs" role="tablist" aria-label="How to play">
+          <button class="tab" type="button" role="tab" id="tab-rules" aria-controls="pane-rules" aria-selected="true" data-nav>Rules</button>
+          <button class="tab" type="button" role="tab" id="tab-controls" aria-controls="pane-controls" aria-selected="false" data-nav>Controls</button>
+          <button class="tab" type="button" role="tab" id="tab-sources" aria-controls="pane-sources" aria-selected="false" data-nav>Sources</button>
+        </div>
+      </header>
+      <div class="pane" id="pane-rules" role="tabpanel" aria-labelledby="tab-rules">
+        <ul class="rows explain">
+          <li><span data-icon="mono"></span><p><b>Lanes.</b> Steer the ship across three lanes to catch coloured blocks. They land on the beat.</p></li>
+          <li><span data-icon="diamond"></span><p><b>The 3×7 grid.</b> Each block you catch drops into the grid column of its lane.</p></li>
+          <li><span data-icon="check"></span><p><b>Matches.</b> Three or more touching blocks make a match. A short timer starts; when it runs out the match cashes in for 35 × blocks² points.</p></li>
+          <li><span data-icon="warn"></span><p><b>Overfill.</b> A column that fills up cashes the grid in at once. The column’s rails glow orange-red when it is full.</p></li>
+          <li><span data-icon="close"></span><p><b>Greys.</b> Grey blocks take the top block off their column. In Ninja, spikes wipe the whole grid.</p></li>
+          <li><span data-icon="ninja"></span><p><b>Power blocks.</b> They multiply a live match, or copy your grid when none is pending.</p></li>
+        </ul>
+      </div>
+      <div class="pane" id="pane-controls" role="tabpanel" aria-labelledby="tab-controls" hidden>
+        <ul class="rows keysheet">
+          <li><span class="name">Steer</span><span>Mouse · <i class="kbd">←</i><i class="kbd">→</i> or <i class="kbd">A</i><i class="kbd">D</i> · stick · drag</span></li>
+          <li><span class="name">Pause</span><span><i class="kbd">Esc</i> · Start</span></li>
+          <li><span class="name">Restart</span><span><i class="kbd">R</i></span></li>
+          <li><span class="name">Video</span><span><i class="kbd">V</i> mini / hidden</span></li>
+          <li><span class="name">Live grid</span><span><i class="kbd">[</i><i class="kbd">]</i> blocks per beat · <i class="kbd">-</i><i class="kbd">=</i> capture delay</span></li>
+          <li><span class="name">Menus</span><span>Arrows or d-pad · <i class="kbd">↵</i> or A · <i class="kbd">Esc</i> or B</span></li>
+        </ul>
+      </div>
+      <div class="pane" id="pane-sources" role="tabpanel" aria-labelledby="tab-sources" hidden>
+        <ul class="rows explain">
+          <li><span data-icon="play"></span><p><b>Demo.</b> A 2½-minute song made in your browser, 128 BPM.</p></li>
+          <li><span data-icon="file"></span><p><b>Audio file.</b> MP3, WAV, OGG, FLAC or M4A. It is analysed on your device and never uploaded.</p></li>
+          <li><span data-icon="video"></span><p><b>YouTube video.</b> Start asks to share this tab: keep “Also share tab audio” on, so the game can hear the video and find the beat as it plays. Nothing is recorded. Chrome or Edge on a computer.</p></li>
+        </ul>
+      </div>
+      <div class="actions">
+        <button class="act" type="button" data-back data-nav data-default><span data-icon="chevL"></span>Back</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ loading -->
+  <section id="loading" class="screen loading" hidden aria-labelledby="load-title">
+    <div class="load-frame">
+      <div class="load-ring">
+        <svg viewBox="0 0 360 360" aria-hidden="true">
+          <circle cx="180" cy="180" r="172" fill="none" stroke="rgba(120,225,218,.16)" stroke-width="1"/>
+          <g data-load="segs"></g>
+        </svg>
+        <div class="load-pct"><b class="num" data-load="pct">0</b><span>%</span><span class="micro" data-load="verb">Analysing</span></div>
+      </div>
+      <div class="load-side">
+        <p class="eyebrow cyan">Building your track</p>
+        <h2 class="load-title" id="load-title" data-load="title">Demo song</h2>
+        <p class="micro" data-load="meta"></p>
+        <ol class="stages" data-load="stages"></ol>
+        <p class="load-stats micro" data-load="stats"></p>
+      </div>
+    </div>
+    <p class="tip"><span class="micro cyan">Tip</span><span data-load="tip">Hit sounds follow the beat grid, so they stay in time even when you are late.</span></p>
+    <p class="esc micro"><i class="kbd">Esc</i> Cancel</p>
+  </section>
+
+  <!-- ============================================================ pause -->
+  <section id="pause" class="screen menu pause" hidden aria-labelledby="pause-title">
+    <div class="pause-col">
+      <p class="eyebrow cyan" data-pause="song"></p>
+      <h2 class="paused" id="pause-title" data-decode>Paused</h2>
+      <div class="rule-cy"></div>
+      <dl class="pstats">
+        <div><dt class="micro">Score</dt><dd class="num" data-pause="score">0</dd></div>
+        <div><dt class="micro">Time</dt><dd class="num"><span data-pause="time">0:00</span> <small data-pause="total"></small></dd></div>
+        <div><dt class="micro">Blocks</dt><dd class="num"><span data-pause="blocks">0</span> <small data-pause="blocksTotal"></small></dd></div>
+      </dl>
+      <div class="profile pause-profile" data-pause="profile"><canvas class="dim"></canvas><div class="lit-clip"><canvas class="lit"></canvas></div><i class="head"></i></div>
+      <div class="set-rows compact live-only">
+        <div class="srow" tabindex="0" data-nav data-step role="spinbutton" id="pause-video-row"><span class="name">Video</span><span class="sel"><span class="chev" data-icon="chevL"></span><output>Mini</output><span class="chev" data-icon="chevR"></span></span></div>
+        <div class="srow" tabindex="0" data-nav data-step role="spinbutton" id="pause-octave-row"><span class="name">Blocks per beat</span><span class="sel"><span class="chev" data-icon="chevL"></span><output data-octave-out>1</output><span class="chev" data-icon="chevR"></span></span></div>
+        <div class="srow" tabindex="0" data-nav data-step role="spinbutton" id="pause-delay-row"><span class="name">Capture delay</span><span class="sel"><span class="chev" data-icon="chevL"></span><output data-delay-out>60 MS</output><span class="chev" data-icon="chevR"></span></span></div>
+      </div>
+    </div>
+    <nav class="stack-col" aria-label="Pause menu">
+      <div class="stack">
+        <button class="cb" type="button" id="resume-btn" data-nav data-default style="--i:0"><span class="lbl">Resume</span><span class="meta"><i class="kbd">Esc</i></span></button>
+        <button class="cb" type="button" id="pause-restart-btn" data-nav style="--i:1"><span class="lbl">Restart</span><span class="meta"><i class="kbd">R</i></span></button>
+        <button class="cb" type="button" id="pause-settings-btn" data-nav style="--i:2"><span class="lbl">Settings</span></button>
+        <div class="quit-gap"></div>
+        <button class="cb" type="button" id="pause-menu-btn" data-nav style="--i:3"><span class="lbl">Quit to menu</span></button>
+      </div>
+    </nav>
+    <p class="keys micro" aria-hidden="true"><span><i class="kbd">Esc</i> Resume</span><span><i class="kbd">R</i> Restart</span></p>
+  </section>
+
+  <!-- ============================================================ results -->
+  <section id="results" class="screen center" hidden aria-labelledby="res-title">
+    <div class="panel dialog results">
+      <i class="corner tl"></i><i class="corner tr"></i><i class="corner bl"></i><i class="corner br"></i>
+      <header class="head left">
+        <p class="eyebrow cyan" data-res="mode">Results</p>
+        <h2 class="res-title" id="res-title" data-res="title"></h2>
+      </header>
+      <div class="res-body">
+        <div class="tally">
+          <div class="trow"><span class="micro">Score</span><b class="num" data-res="raw">0</b></div>
+          <ul class="bonuses" data-res="bonuses"></ul>
+          <div class="trow final"><span class="micro">Final</span><b class="num" data-res="final">0</b></div>
+          <div class="best-line" data-res="best"></div>
+        </div>
+        <div class="res-gauges" data-res="gauges"></div>
+      </div>
+      <div class="actions">
+        <button class="act" type="button" id="restart-btn" data-nav data-default><span data-icon="restart"></span>Play again<i class="kbd">R</i></button>
+        <button class="act" type="button" id="menu-btn" data-nav>Menu<span data-icon="chevR"></span></button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ in-play HUD -->
+  <div id="hud" class="hud" hidden>
+    <div class="hud-song">
+      <button class="pause-ring" type="button" id="hud-pause" aria-label="Pause">
+        <svg viewBox="0 0 44 44" aria-hidden="true"><circle cx="22" cy="22" r="20" fill="none" stroke="currentColor" stroke-width="1.5" pathLength="360" stroke-dasharray="72 18"/></svg>
+        <span data-icon="pause"></span>
+      </button>
+      <div class="song-lines">
+        <div class="song-line1"><span class="chip cy" data-hud="mode">Mono</span><span class="song-title" data-hud="title"></span></div>
+        <div class="profile hud-profile" data-hud="profile"><canvas class="dim"></canvas><div class="lit-clip"><canvas class="lit"></canvas></div><i class="head"></i></div>
+        <div class="song-times"><span class="num" data-hud="elapsed">0:00</span><span class="num dim" data-hud="remain"></span></div>
+      </div>
+    </div>
+
+    <div class="hud-score">
+      <div class="score-row">
+        <div class="pchip" data-hud="mult" aria-live="polite"><b class="num">×2</b><span class="micro">Power</span><i class="ping"></i></div>
+        <div class="score-box">
+          <span class="micro">Score</span>
+          <b class="num score" data-hud="score">0</b>
+        </div>
+      </div>
+      <div class="best-row" data-hud="bestrow" hidden><span class="micro" data-hud="bestlabel">Best 0</span><i class="best-bar"><i data-hud="bestfill"></i></i></div>
+      <div class="live-chip" data-hud="live" hidden><i class="dot"></i><span data-hud="livetext">Listening</span></div>
+      <div class="waiting" data-hud="waiting" hidden><i class="dot"></i><span class="micro">Waiting for audio</span></div>
+    </div>
+
+    <div class="hud-grid">
+      <div class="grid-top"><span class="micro">Grid 3×7</span><span class="full-tags"><i>Full</i><i>Full</i><i>Full</i></span></div>
+      <div class="housing" data-hud="housing">
+        <i class="bk tl"></i><i class="bk tr"></i><i class="bk bl"></i><i class="bk br"></i><i class="wipe"></i>
+        <div class="grid" data-hud="grid"><i class="rail r0"></i><i class="rail r1"></i><i class="rail r2"></i><i class="rail r3"></i></div>
+      </div>
+      <div class="lanes" data-hud="lanes"><i></i><i></i><i></i></div>
+      <div class="match">
+        <div class="mring">
+          <svg viewBox="0 0 64 64" aria-hidden="true"><circle class="trk" cx="32" cy="32" r="28"/><circle class="arc" cx="32" cy="32" r="28" pathLength="100" data-hud="timer"/></svg>
+          <b class="num" data-hud="count">—</b>
+        </div>
+        <span class="micro">Match</span>
+        <span class="num pts" data-hud="pending"></span>
+      </div>
+    </div>
+
+    <div class="feed" data-hud="feed" aria-live="polite"></div>
+  </div>
+
+  <!-- ============================================================ YouTube mini player -->
+  <div id="mini" class="mini" hidden aria-label="YouTube video">
+    <div class="mini-strip" data-mini="strip">
+      <span class="grip" data-icon="grip"></span>
+      <span class="micro">Video</span>
+      <button class="mini-hide" type="button" data-mini="hide" aria-label="Hide the video (V)" title="Hide the video (V)" data-icon="eyeOff"></button>
+    </div>
+    <div class="mini-frame"><i class="bk tl"></i><i class="bk tr"></i><i class="bk bl"></i><i class="bk br"></i><div class="mini-player" data-live="player"></div></div>
+  </div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+  <canvas id="fx" aria-hidden="true"></canvas>
   <pre id="debug" class="debug" hidden></pre>
   <noscript><p class="noscript">hypersurf needs JavaScript.</p></noscript>
 </body>

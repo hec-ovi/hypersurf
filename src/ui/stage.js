@@ -306,8 +306,8 @@ export class SelectStage {
       this.camera.aspect = aspect;
       // Keep the object framed on a phone's tall screen.
       this.camera.fov = aspect < 0.8 ? 46 : 30;
-      this.camera.position.set(0, aspect < 0.8 ? 3.8 : 3.7, aspect < 0.8 ? 12.5 : 12);
-      this.camera.lookAt(0, aspect < 0.8 ? 0.1 : 0.85, 0);
+      this.camera.position.set(0, aspect < 0.8 ? 4.4 : 3.7, aspect < 0.8 ? 13 : 12);
+      this.camera.lookAt(0, aspect < 0.8 ? -1.1 : 0.85, 0);
       this.camera.updateProjectionMatrix();
     }
     this.clock += dt;
