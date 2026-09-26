@@ -8,6 +8,7 @@
   <meta name="theme-color" content="#05060A">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2305060A'/%3E%3Cpath d='M5 23 L16 7 L27 23' fill='none' stroke='%2319E0A0' stroke-width='3' stroke-linejoin='round'/%3E%3Cpath d='M10 23 L16 14 L22 23' fill='none' stroke='%23FF1F4B' stroke-width='2.5' stroke-linejoin='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="live.css">
   <script type="importmap">
     {
       "imports": {
@@ -138,6 +139,33 @@
         <button id="restart-btn" class="primary" type="button">Play again <kbd>R</kbd></button>
         <button id="menu-btn" type="button">Menu</button>
       </div>
+    </div>
+  </section>
+
+  <!-- Live mode (YouTube): the player docked beside the game, never under it. -->
+  <aside id="live-dock" class="live-dock" hidden aria-label="YouTube video">
+    <div class="live-player" data-live="player"></div>
+    <div class="live-panel">
+      <p class="live-status" data-live="status" role="status" aria-live="polite"></p>
+      <div class="live-actions">
+        <button id="live-start" class="primary" type="button" disabled>Start</button>
+        <button id="live-back" type="button">Back</button>
+      </div>
+      <div class="live-octave" data-live="octave" role="group" aria-label="Block grid">
+        <span>Blocks per beat</span>
+        <button type="button" data-octave="-1" title="Every other beat ( [ )">½</button>
+        <button type="button" data-octave="0" aria-pressed="true">1</button>
+        <button type="button" data-octave="1" title="Twice per beat ( ] )">2</button>
+      </div>
+      <p class="live-note">Start asks to share this tab: choose it and keep “Also share tab audio” on. The game listens to the video’s sound to find the beat, as it plays. Nothing is recorded, stored or sent.</p>
+      <p class="live-note">Video by YouTube. By playing it you agree to the <a href="https://www.youtube.com/t/terms" target="_blank" rel="noopener">YouTube Terms of Service</a>; see also the <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">Google Privacy Policy</a>. You are responsible for what you play.</p>
+    </div>
+  </aside>
+
+  <section id="live-ready" class="screen" hidden>
+    <div class="panel">
+      <h2>Play along</h2>
+      <p class="muted" data-live="hint">Press Start beside the video.</p>
     </div>
   </section>
 

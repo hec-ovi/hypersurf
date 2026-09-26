@@ -128,8 +128,8 @@ export function loadIframeApi() {
 
 /**
  * A YouTube player in `host` (an element in its own docked panel). Events:
- * onState(state) and onError(code, message). It tracks how much of it is
- * on screen, so playback is only started when at least half of it is.
+ * onState(state) and onError(code, message). Playback is only started
+ * while at least half of it is on screen.
  */
 export class YouTubePlayer {
   constructor(host, videoId, { onState, onError } = {}) {
@@ -138,17 +138,25 @@ export class YouTubePlayer {
     this.ready = false;
     this.player = null;
     this.clock = new VideoClock();
-    this.visible = 0;
     this.error = 0;
     this.handlers = { onState, onError };
-    this._observer = typeof IntersectionObserver === 'function'
-      ? new IntersectionObserver((entries) => { for (const e of entries) this.visible = e.intersectionRatio; }, { threshold: [0, 0.25, 0.5, 0.75, 1] })
-      : null;
+  }
+
+  /** Share of the player inside the viewport of a visible page (nothing is ever laid over it). */
+  get visible() {
+    const f = this.host.querySelector('iframe');
+    if (!f || document.visibilityState !== 'visible') return 0;
+    const r = f.getBoundingClientRect(), area = r.width * r.height;
+    if (area <= 0) return 0;
+    const w = Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0));
+    const h = Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
+    return (w * h) / area;
   }
 
   /** Create the player; resolves when it is ready or has reported an error. */
   async create() {
     const YT = await loadIframeApi();
+    if (this.destroyed) return this; // left before the API arrived
     const mount = document.createElement('div');
     this.host.replaceChildren(mount);
     await new Promise((resolve) => {
@@ -171,8 +179,6 @@ export class YouTubePlayer {
         },
       });
     });
-    const iframe = this.host.querySelector('iframe');
-    if (iframe && this._observer) this._observer.observe(iframe);
     return this;
   }
 
@@ -207,7 +213,7 @@ export class YouTubePlayer {
   }
 
   destroy() {
-    if (this._observer) this._observer.disconnect();
+    this.destroyed = true;
     try {
       if (this.player && this.player.destroy) this.player.destroy();
     } catch { /* already gone */ }

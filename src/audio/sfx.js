@@ -9,6 +9,11 @@
 // Node tests them) and played through one gain bus. Scheduling is in song
 // time: song time s plays at context time songStart + s, the same mapping
 // the music uses, so quantised hits land on the music's grid.
+//
+// Live mode has no fixed grid (setSong(null)): hits play at once, the
+// music is never ducked (the video's sound is not ours to touch), and
+// onPlay reports each sound's context time so the live tracker can keep
+// the game's own sounds out of what it hears.
 
 import { gridPosition, gridTime } from './songmap.js';
 
@@ -111,6 +116,7 @@ export class Sfx {
     this._buffers = new Map();
     this._lastAt = -1;
     this._lastKey = -1;
+    this.onPlay = null;
   }
 
   /** Use a song's beat grid (makeGrid) and the context time song time 0 plays at. */
@@ -156,12 +162,17 @@ export class Sfx {
     }
     src.connect(out);
     src.start(this.songStart + songTime);
+    if (this.onPlay) this.onPlay(this.songStart + songTime);
+  }
+
+  /** When a sound in song time t plays: the next grid step, or right away without a grid. */
+  _at(songTime) {
+    return this.grid ? quantize(this.grid, songTime, this._now()) : this._now();
   }
 
   /** A colour block landed in `column` (0–2), which now holds `height` blocks. */
   hit(column, height, songTime) {
-    if (!this.grid) return;
-    const at = quantize(this.grid, songTime, this._now());
+    const at = this._at(songTime);
     const d = hitDegree(column, height);
     if (at === this._lastAt && d === this._lastKey) return; // one voice per note per step
     this._lastAt = at;
@@ -171,14 +182,12 @@ export class Sfx {
 
   /** A match of `count` blocks cashed in. */
   cashIn(count, songTime) {
-    if (!this.grid) return;
     const size = count >= 12 ? 2 : count >= 6 ? 1 : 0;
-    this._play(this._buffer(`c${size}`, (sr) => synthChord(chordFreqs(size), sr)), quantize(this.grid, songTime, this._now()));
+    this._play(this._buffer(`c${size}`, (sr) => synthChord(chordFreqs(size), sr)), this._at(songTime));
   }
 
   power(songTime) {
-    if (!this.grid) return;
-    this._play(this._buffer('pb', (sr) => synthChord([ROOT * 2, scaleFreq(3) * 2, ROOT * 4, scaleFreq(3) * 4], sr, 1.1)), quantize(this.grid, songTime, this._now()));
+    this._play(this._buffer('pb', (sr) => synthChord([ROOT * 2, scaleFreq(3) * 2, ROOT * 4, scaleFreq(3) * 4], sr, 1.1)), this._at(songTime));
   }
 
   /** A grey (or spike) hit: a thud now, and the music dips 3 dB for 150 ms. */

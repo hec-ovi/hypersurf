@@ -2,6 +2,10 @@
 // results → instant restart. Files and the demo play through an
 // AudioBufferSourceNode; game logic runs at a fixed 240 Hz step on the
 // heard song time, and the view renders whatever time the clock reads.
+//
+// Live mode (YouTube, and ?live=demo for the demo through the same path)
+// listens to a MediaStream instead: a LiveSession tracks the beat and
+// grows a LiveMap two seconds ahead, which the same view and rules play.
 
 import { GameView } from './game/view.js';
 import { RulesEngine, RULES, EVENT } from './game/rules.js';
@@ -15,7 +19,12 @@ import { Analyzer } from './audio/analyzer.js';
 import { SongPlayer, copyChannels, toAudioBuffer } from './audio/player.js';
 import { LEAD_IN, TAIL, makeGrid } from './audio/songmap.js';
 import { Sfx } from './audio/sfx.js';
-import { parseVideoId } from './live/youtube.js';
+import { parseVideoId, YouTubePlayer, STATE as VIDEO } from './live/youtube.js';
+import { captureSupport, captureTabAudio, stopStream, CAPTURE_MESSAGES } from './live/capture.js';
+import { LiveSession, LiveClock } from './live/session.js';
+import { LiveMap } from './live/livemap.js';
+import { LiveDock } from './live/panel.js';
+import { SongClock } from './audio/clock.js';
 
 const params = new URLSearchParams(location.search);
 const DEBUG = params.has('debug') && params.get('debug') !== '0';
@@ -27,10 +36,14 @@ const SWOOP = 2; // seconds of the lead-in spent flying in
 const MAX_SECONDS = 15 * 60;
 const MIN_SECONDS = 5;
 const MODE_LABEL = { mono: 'Mono', ninja: 'Ninja', casual: 'Casual' };
+/** ?live=demo: the demo plays through the live listening path (a test hook for the live mode). */
+const LIVE_DEMO = params.get('live') === 'demo';
+const OCTAVE_LABEL = { '-1': 'Blocks every other beat', 0: 'Blocks on the beat', 1: 'Blocks twice per beat' };
 const SETTINGS_KEY = 'hypersurf.settings';
 
 const $ = (id) => document.getElementById(id);
 const storage = safeLocalStorage();
+const dock = new LiveDock($('live-dock'));
 
 const app = {
   state: 'boot',
@@ -59,6 +72,8 @@ const app = {
   busy: false,
   hitSample: makeSample(),
   frozen: null, // debug: song time the view is held at
+  live: null, // live mode: { kind, session, clock, map, song, yt, stream, … }
+  octave: 0, // live block grid: -1 every other beat, 0 on the beat, 1 twice per beat
 };
 
 /** Stats for automated checks and the ?debug=1 overlay. Mutated in place. */
@@ -109,6 +124,8 @@ window.__hypersurf = {
   freeze(t, opts) { return DEBUG ? freezeAt(t, opts) : false; },
   /** Debug only: render frames back to back with a GPU sync after each; returns timings. */
   bench(opts) { return DEBUG ? bench(opts) : null; },
+  /** Debug only: run the real frame loop at ~60 Hz for `seconds` (a hidden tab gets no animation frames). */
+  pump(seconds) { return DEBUG ? pump(seconds) : null; },
 };
 
 // --- settings -------------------------------------------------------------------
@@ -140,7 +157,7 @@ function saveSettings() {
 
 // --- states ---------------------------------------------------------------------
 
-const SCREENS = { menu: 'menu', analyze: 'loading', paused: 'pause', results: 'results' };
+const SCREENS = { menu: 'menu', analyze: 'loading', paused: 'pause', results: 'results', live: 'live-ready' };
 
 function setState(state) {
   app.state = state;
@@ -212,6 +229,7 @@ async function run(task) {
   } catch (err) {
     console.warn(err);
     stats.errors.push(String(err && err.message ? err.message : err));
+    leaveLive();
     setState('menu');
     message(err && err.userMessage ? err.userMessage : `Something went wrong: ${err && err.message ? err.message : err}`);
   } finally {
@@ -240,7 +258,8 @@ function playDemo() {
         buffer: toAudioBuffer(app.ctx, r.channels, r.sampleRate), maps: { [mode]: r.songMap }, timings: r.timings,
       };
     }
-    await startSong(mode);
+    if (LIVE_DEMO) await startLiveDemo();
+    else await startSong(mode);
   });
 }
 
@@ -279,7 +298,41 @@ function playYouTube(input) {
     message('That does not look like a YouTube link or video ID.');
     return;
   }
-  message('Playing along with YouTube videos is not available yet. Play an audio file or the demo for now.');
+  const support = captureSupport();
+  if (!support.ok) {
+    message(CAPTURE_MESSAGES[support.reason]);
+    return;
+  }
+  if (app.busy || app.live) return;
+  message('');
+  try {
+    ensureAudio();
+  } catch (err) {
+    message(err.message);
+    return;
+  }
+  const live = app.live = { kind: 'youtube', videoId: id, yt: null, session: null, stream: null, map: null, clock: null, song: null, seen: 0, seeks: 0, wantPlay: false, playTry: 0 };
+  dock.show(true);
+  dock.status('Loading the video…');
+  dock.canStart(false);
+  dock.octave(app.octave);
+  if (app.view && app.view.gfx.renderer) app.view.resize();
+  setState('live');
+  // The player loads in the background: Back works meanwhile, and nothing waits on it.
+  const yt = live.yt = new YouTubePlayer(dock.player, id, { onError: onVideoError });
+  const current = () => app.live === live;
+  yt.create().then(() => {
+    if (current() && yt.ready && !yt.error) {
+      dock.status('Ready. Press Start and share this tab with its audio.', true);
+      dock.canStart(true);
+    }
+  }, (err) => {
+    if (current()) dock.status(err.userMessage || 'The YouTube player could not be loaded.');
+  });
+  setTimeout(() => {
+    // YouTube's embed never reports a video that does not exist until it is played.
+    if (current() && !yt.ready && !yt.error) dock.status('The video has not loaded after 15 seconds. It may not exist, be private or be blocked from other sites, or the connection is slow. Go Back to try another.');
+  }, 15000);
 }
 
 /** Build (or reuse) the SongMap for `mode` and start a run. */
@@ -322,6 +375,19 @@ async function startSong(mode) {
 
 /** (Re)start the current map from the top of the lead-in. Instant: nothing is re-analysed. */
 async function beginRun() {
+  const map = app.map;
+  const start = Math.min(FROM, Math.max(0, map.duration - 5)) - LEAD_IN;
+  await resetRun(start);
+  app.nextBeat = 0;
+  while (app.nextBeat < map.beats.length && map.beats[app.nextBeat] < start) app.nextBeat++;
+  ensureAudio();
+  app.player.play(app.song.buffer, LEAD_IN, start + LEAD_IN);
+  app.sfx.setSong(app.grid, app.player.clock.songStart);
+  play();
+}
+
+/** Fresh rules, ship, juice and view for app.map at song time `start` (compiling on the first run). */
+async function resetRun(start) {
   const { view, map, mode } = app;
   app.player.stop();
   app.frozen = null;
@@ -333,7 +399,6 @@ async function beginRun() {
   app.input.setShoulders(RULES[mode].shoulders);
   app.hud.reset(mode);
   app.autopilot = app.autopilotOn ? createAutopilot(map.blocks) : null;
-  const start = Math.min(FROM, Math.max(0, map.duration - 5)) - LEAD_IN;
   view.reset(start);
   if (!view.compiled) {
     setState('analyze');
@@ -346,39 +411,52 @@ async function beginRun() {
   app.runStart = start;
   app.simT = start;
   app.viewT = start;
-  app.nextBeat = 0;
-  while (app.nextBeat < map.beats.length && map.beats[app.nextBeat] < start) app.nextBeat++;
   stats.hits = 0;
   stats.misses = 0;
   stats.runs++;
-  ensureAudio();
-  app.player.play(app.song.buffer, LEAD_IN, start + LEAD_IN);
-  app.sfx.setSong(app.grid, app.player.clock.songStart);
+}
+
+function play() {
   app.lastFrame = performance.now();
-  view.gfx.resetTiming(app.lastFrame);
+  app.view.gfx.resetTiming(app.lastFrame);
   setState('play');
   app.input.requestLock();
 }
 
 function finishRun() {
+  const live = app.live;
+  if (live && live.map) {
+    // Ghosts still unconfirmed at the end were never really there.
+    live.map.dropGhosts();
+    withdrawCancelled();
+    live.wantPlay = false;
+  }
+  const song = live ? live.song : app.song;
   const results = app.rules.results();
-  const best = app.best.submit(app.song.key, app.mode, results, app.map.hash);
+  const best = app.best.submit(song.key, app.mode, results, app.map.hash);
   stats.lastResults = results;
-  showResults($('results'), { results, best, title: app.song.title, modeLabel: MODE_LABEL[app.mode] });
+  showResults($('results'), { results, best, title: song.title, modeLabel: MODE_LABEL[app.mode] });
   setState('results');
   $('restart-btn').focus({ preventScroll: true });
 }
 
 function pause() {
   if (app.state !== 'play') return;
-  app.player.pause().catch(() => {});
+  if (app.live && app.live.yt) {
+    app.live.wantPlay = false;
+    app.live.yt.pause();
+    app.live.clock.hold();
+  } else app.player.pause().catch(() => {});
   setState('paused');
   $('resume-btn').focus({ preventScroll: true });
 }
 
 function resume() {
   if (app.state !== 'paused') return;
-  app.player.resume().catch(() => {});
+  if (app.live && app.live.yt) {
+    app.live.wantPlay = true;
+    app.live.yt.play();
+  } else app.player.resume().catch(() => {});
   app.lastFrame = performance.now();
   app.view.gfx.resetTiming(app.lastFrame);
   setState('play');
@@ -388,6 +466,12 @@ function resume() {
 function restart() {
   if (!app.map || app.busy) return;
   if (app.state === 'paused') app.player.resume().catch(() => {});
+  if (app.live) {
+    if (!app.live.session) { setState('live'); return; } // sharing stopped: Start shares again
+    if (app.live.yt) app.live.yt.seekTo(0);
+    run(beginLiveRun);
+    return;
+  }
   run(beginRun);
 }
 
@@ -396,11 +480,213 @@ function toMenu() {
     app.player.stop();
     app.player.resume().catch(() => {});
   }
+  leaveLive();
   setState('menu');
+}
+
+// --- live mode --------------------------------------------------------------------
+
+/** ?live=demo: route the demo (and our own sounds) into a stream and listen to it like a shared tab. */
+async function startLiveDemo() {
+  if (!app.live) {
+    const ctx = app.ctx;
+    const dest = ctx.createMediaStreamDestination();
+    const monitor = ctx.createGain(); // calibration clicks: heard, and "captured"
+    monitor.connect(ctx.destination);
+    monitor.connect(dest);
+    app.player.gain.connect(dest);
+    app.sfx.bus.connect(dest);
+    app.live = { kind: 'demo', dest, monitor, session: null, map: null, clock: null, song: null, seen: 0 };
+    app.live.session = await new LiveSession(ctx, dest.stream, { clickBus: monitor }).open();
+    await calibrateLive();
+  }
+  await beginLiveRun();
+}
+
+/** The Start click: ask to share this tab (inside the click), then calibrate and play. */
+function startYouTube() {
+  const live = app.live;
+  if (!live || !live.yt || !live.yt.ready || live.session || app.busy) return;
+  ensureAudio();
+  const sharing = captureTabAudio({ onEnded: onShareEnded });
+  app.busy = true;
+  dock.canStart(false);
+  dock.status('Choose this tab in the prompt and keep its audio on.');
+  (async () => {
+    try {
+      live.stream = await sharing;
+      live.session = await new LiveSession(app.ctx, live.stream, { clickBus: app.ctx.destination }).open();
+      await calibrateLive();
+      await beginLiveRun();
+    } catch (err) {
+      console.warn(err);
+      if (!err.userMessage) stats.errors.push(String(err && err.message ? err.message : err));
+      if (live.session) live.session.close();
+      stopStream(live.stream);
+      live.session = live.stream = null;
+      setState('live');
+      dock.status(err.userMessage || `Something went wrong: ${err.message || err}`);
+      dock.canStart(true);
+    } finally {
+      app.busy = false;
+    }
+  })();
+}
+
+/** Eight clicks through our own output, heard back in the capture: the capture delay. */
+async function calibrateLive() {
+  setState('analyze');
+  loading('Listening', 0.5, 'Calibrating: listening for eight clicks…');
+  const r = await app.live.session.calibrate();
+  if (!r && app.live.yt) dock.status('The calibration clicks were not heard; timing may be a little off. Is the tab’s audio shared and unmuted?');
+  else if (app.live.yt) dock.status(`Listening. Capture delay ${Math.round(r.latency * 1000)} ms.`, true);
+  loading(null, 1, null);
+}
+
+/** A live run: a fresh LiveMap grown from what the session hears. */
+async function beginLiveRun() {
+  const live = app.live, mode = currentMode(), view = app.view;
+  const demo = live.kind === 'demo';
+  live.song = demo
+    ? { key: 'live:demo', title: 'hypersurf demo · live', source: 'live-demo' }
+    : { key: `yt:${live.videoId}`, title: `YouTube · ${live.videoId}`, source: 'youtube' };
+  const duration = demo ? app.song.buffer.duration : live.yt.duration;
+  const map = new LiveMap({ mode, seed: live.song.key, duration });
+  map.setOctave(app.octave);
+  live.map = map;
+  live.seen = 0;
+  app.map = map;
+  app.mode = mode;
+  view.load(map);
+  app.hud.load(map, view.path, live.song.title);
+  stats.song = { key: live.song.key, title: live.song.title, source: live.song.source, duration };
+  stats.songMap = null;
+  stats.analysis = null;
+  stats.duration = duration;
+  stats.mode = mode;
+  await resetRun(-LEAD_IN);
+  app.nextBeat = -Infinity;
+  ensureAudio();
+  app.sfx.setSong(null, 0);
+  app.sfx.music = null; // never duck: the song's sound is not ours to touch
+  app.sfx.onPlay = (t) => { if (app.live && app.live.session) app.live.session.suppress(t); };
+  if (demo) {
+    app.player.play(app.song.buffer, LEAD_IN, 0);
+    live.clock = new LiveClock(app.player.clock);
+  } else {
+    const clock = new SongClock(app.ctx);
+    clock.offset = app.settings.latency / 1000;
+    clock.start(0);
+    live.clock = new LiveClock(clock);
+    live.clock.start(-LEAD_IN);
+    live.seeks = live.yt.clock.seeks;
+    live.wantPlay = true;
+    live.playTry = 0;
+    live.yt.play();
+  }
+  live.session.begin(map, live.clock);
+  play();
+}
+
+/**
+ * Song time for this frame. A YouTube run moves only while the video plays
+ * (the swoop-in may run ahead of it, up to 0.3 s before the song starts),
+ * a seek restarts the beat tracking, and the live map grows to now + 2 s.
+ */
+function liveTime() {
+  const live = app.live, yt = live.yt;
+  if (yt) {
+    const vc = yt.sample();
+    if (vc.seeks !== live.seeks) {
+      live.seeks = vc.seeks;
+      live.session.resync();
+    }
+    if (vc.playing) live.clock.run();
+    else if (live.clock.time() >= -0.3) live.clock.hold();
+    // playVideo may be refused while the player is off screen; try again each second.
+    const now = performance.now();
+    if (live.wantPlay && vc.state !== VIDEO.PLAYING && vc.state !== VIDEO.BUFFERING && vc.state !== VIDEO.ENDED && now - live.playTry > 1000) {
+      live.playTry = now;
+      yt.play();
+    }
+  }
+  const t = live.clock.time();
+  live.session.update(t);
+  withdrawCancelled();
+  return t;
+}
+
+/** Ghosts the live map withdrew leave the rules too. */
+function withdrawCancelled() {
+  const live = app.live, c = live.map.cancelled;
+  for (; live.seen < c.count; live.seen++) app.rules.withdraw(c.list[live.seen % c.list.length]);
+}
+
+/** Beat pulses on the live grid, only while it is locked. */
+function liveBeat(t) {
+  const map = app.live.map;
+  if (!map.gate || !map.grid.valid) return;
+  const n = Math.floor(map.beatAt(t));
+  if (n <= app.nextBeat) return; // a gliding grid may step back a beat: pulse each beat once
+  if (app.nextBeat !== -Infinity) app.juice.onBeat(n, t, app.view.intensity);
+  app.nextBeat = n;
+}
+
+function setOctave(o) {
+  app.octave = Math.max(-1, Math.min(1, o));
+  if (app.live && app.live.map) app.live.map.setOctave(app.octave);
+  dock.octave(app.octave);
+  if (app.state === 'play') app.hud.toast(OCTAVE_LABEL[app.octave]);
+}
+
+/** "Stop sharing": the run cannot hear the song any more. */
+function onShareEnded() {
+  const live = app.live;
+  if (!live || !live.session) return;
+  if (app.state === 'play' || app.state === 'paused') finishRun();
+  live.session.close();
+  live.session = live.stream = null;
+  dock.status('Sharing stopped. Press Start to share the tab again.');
+  dock.canStart(true);
+}
+
+function onVideoError(code, text) {
+  dock.status(text);
+  dock.canStart(false);
+  message(text);
+  if (app.state === 'play' || app.state === 'paused') finishRun();
+}
+
+/** Leave the live mode: stop listening, free the player and give the page back its full width. */
+function leaveLive() {
+  const live = app.live;
+  if (!live) return;
+  app.live = null;
+  if (live.session) live.session.close();
+  if (live.kind === 'demo') {
+    try {
+      app.player.gain.disconnect(live.dest);
+      app.sfx.bus.disconnect(live.dest);
+      live.monitor.disconnect();
+    } catch { /* already apart */ }
+  } else {
+    stopStream(live.stream);
+    if (live.yt) live.yt.destroy();
+    dock.show(false);
+    if (app.view && app.view.gfx.renderer) app.view.resize();
+  }
+  if (app.sfx) {
+    app.sfx.music = app.player.gain;
+    app.sfx.onPlay = null;
+    app.sfx.setSong(null, 0);
+  }
+  app.map = null;
+  stats.live = { available: false, tempo: null, confidence: null };
 }
 
 // --- frame loop -------------------------------------------------------------------
 
+let liveStatsNext = 0;
 function frame() {
   const t0 = performance.now();
   const dt = Math.min(0.1, Math.max(0, (t0 - app.lastFrame) / 1000));
@@ -441,6 +727,10 @@ function frame() {
   }
   stats.flashes.allowed = app.juice.limiter.allowed;
   stats.flashes.denied = app.juice.limiter.denied;
+  if (app.live && app.live.session && t0 >= liveStatsNext) {
+    liveStatsNext = t0 + 250;
+    stats.live = { available: true, ...app.live.session.stats };
+  }
   if (DEBUG) debugOverlay(t0);
 }
 
@@ -473,7 +763,7 @@ function lowerQuality() {
 /** Advance the game to the heard song time in fixed steps. */
 function tick(dt) {
   const { rules, ship, map, input, juice } = app;
-  const t = app.player.time();
+  const t = app.live ? liveTime() : app.player.time();
   const target = app.autopilot ? app.autopilot(t) : input.target();
   let steps = 0;
   while (app.simT + STEP <= t && steps < MAX_STEPS) {
@@ -489,14 +779,16 @@ function tick(dt) {
 
   for (let k = 0; k < rules.eventCount; k++) onEvent(rules.events[k]);
   rules.clearEvents();
+  if (app.live) liveBeat(t);
   const beats = map.beats;
   while (app.nextBeat < beats.length && beats[app.nextBeat] <= t) {
     juice.onBeat(app.nextBeat, t, app.view.intensity);
     app.nextBeat++;
   }
   juice.update(dt);
-  app.hud.update(rules, t / map.duration, dt);
-  if (t > map.duration + 0.75) finishRun();
+  const yt = app.live && app.live.yt;
+  app.hud.update(rules, yt ? yt.clock.time / yt.duration : t / map.duration, dt);
+  if (yt ? yt.clock.state === VIDEO.ENDED && t > 0 : t > map.duration + 0.75) finishRun();
 }
 
 function onEvent(ev) {
@@ -626,6 +918,24 @@ async function bench({ from = app.viewT, frames = 300, dt = 1 / 60, render = tru
   };
 }
 
+/** The frame loop driven by message-channel turns instead of animation frames. */
+async function pump(seconds = 5) {
+  const ch = new MessageChannel();
+  const turn = () => new Promise((resolve) => { ch.port1.onmessage = resolve; ch.port2.postMessage(0); });
+  const end = performance.now() + seconds * 1000;
+  let next = performance.now();
+  while (performance.now() < end) {
+    await turn();
+    if (performance.now() < next) continue;
+    next = Math.max(next + 1000 / 60, performance.now() - 50);
+    // What the animation loop does per frame: fresh render info and node frame.
+    if (app.view && app.view.gfx.renderer) app.view.gfx.nextFrame();
+    frame();
+  }
+  ch.port1.close();
+  return stats.state;
+}
+
 // --- debug overlay ----------------------------------------------------------------
 
 let debugNext = 0;
@@ -646,7 +956,9 @@ function debugOverlay(now) {
     `song ${stats.songTime.toFixed(2)} / ${stats.duration.toFixed(2)} s · ${stats.mode} · hits ${stats.hits} · misses ${stats.misses}`,
     `analysis ${total} ms: ${timing}`,
     m ? `songmap ${m.blocks} blocks · ${m.bpm} BPM · ${m.powerBlocks} PB · ${m.hash}` : 'songmap —',
-    `live tempo ${stats.live.tempo ?? '—'} · confidence ${stats.live.confidence ?? '—'}`,
+    stats.live.available
+      ? `live ${stats.live.tempo} BPM · confidence ${stats.live.confidence} · hits ${stats.live.hitRate} · delay ${stats.live.latencyMs} ms · ${stats.live.locked ? 'locked' : 'listening'} · blocks ${stats.live.blocks} (${stats.live.ghosts} ghosts, ${stats.live.withdrawn} withdrawn)`
+      : 'live —',
     `flashes ${stats.flashes.allowed} allowed · ${stats.flashes.denied} limited${app.autopilot ? ' · autopilot' : ''}`,
   ].join('\n');
 }
@@ -732,6 +1044,8 @@ function wireMenu() {
     }
   });
 
+  dock.wire({ start: startYouTube, back: toMenu, octave: setOctave });
+
   $('resume-btn').addEventListener('click', resume);
   $('pause-restart-btn').addEventListener('click', restart);
   $('pause-menu-btn').addEventListener('click', toMenu);
@@ -748,6 +1062,8 @@ function wireMenu() {
       restart();
     } else if (e.code === 'KeyP' && DEBUG && app.state === 'play') {
       window.__hypersurf.autopilot = !app.autopilot;
+    } else if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && app.live && app.state === 'play') {
+      setOctave(app.octave + (e.code === 'BracketLeft' ? -1 : 1));
     }
   });
   document.addEventListener('visibilitychange', () => {
@@ -771,7 +1087,7 @@ async function boot() {
   wireErrors();
   wireMenu();
   setState('menu');
-  if (params.get('live') === 'demo') message('The live path (?live=demo) is not built yet. The demo below plays through the offline path.');
+  if (LIVE_DEMO) message('?live=demo: the demo plays through the live listening path, as a YouTube video would.');
   app.view = new GameView($('view'), { forceWebGL: params.get('webgl') === '1', quality: app.settings.quality });
   app.viewReady = app.view.init().then(() => {
     stats.backend = app.view.backend;
