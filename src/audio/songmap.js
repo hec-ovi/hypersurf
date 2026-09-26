@@ -430,7 +430,7 @@ function enforceSpacing(blocks, rand) {
 
 // --- shapes ------------------------------------------------------------------
 
-const smootherstep = (u) => (u <= 0 ? 0 : u >= 1 ? 1 : u * u * u * (u * (6 * u - 15) + 10));
+export const smootherstep = (u) => (u <= 0 ? 0 : u >= 1 ? 1 : u * u * u * (u * (6 * u - 15) + 10));
 /** d/du of smootherstep. */
 const smootherstepRate = (u) => (u <= 0 || u >= 1 ? 0 : 30 * u * u * (1 - u) * (1 - u));
 
@@ -490,6 +490,27 @@ export function shapePose(S, t, out) {
     }
   }
   return out;
+}
+
+/** A twist's length in seconds for bars `barLen` long. */
+export const twistLength = (barLen) => Math.min(2.4, Math.max(1.6, barLen));
+/** Length of each half-twist of a flip for bars `barLen` long. */
+export const flipHalf = (barLen) => Math.min(2.2, Math.max(1.4, barLen));
+
+/** A sweep's heading offset (degrees) at time t inside it. */
+export function sweepYawAt(W, t) {
+  const s = Math.sin((Math.PI * (t - W.start)) / (W.end - W.start));
+  return W.dir * W.yaw * s * s;
+}
+
+/**
+ * The bank (radians) a curve asks for: a share of what a turn at `speed`
+ * (m/s) and heading rate `w` (rad/s) would want, capped by intensity I.
+ */
+export function bankTarget(speed, w, I) {
+  const cap = LAYOUT.bankMax * DEG * (0.35 + 0.65 * I);
+  const target = Math.atan((speed * w) / 9.81) * LAYOUT.bankGain;
+  return Math.max(-cap, Math.min(cap, target));
 }
 
 /** Bar start times (from the downbeat) inside [0, duration]. */
@@ -582,7 +603,7 @@ export function planFeatures(features, grid, downbeatPhase, loops) {
     const t = bars[j];
     let f = null;
     if (dI[j] <= -LAYOUT.flipFall && flips < LAYOUT.maxFlips && j + LAYOUT.flipBars < nb) {
-      const half = Math.min(2.2, Math.max(1.4, barLen));
+      const half = flipHalf(barLen);
       const start = t - half / 2, end = bars[j + LAYOUT.flipBars] + half / 2;
       if (fits(start, end)) {
         f = { type: LOOP.FLIP, time: t, start, end, inEnd: start + half, outStart: end - half };
@@ -590,7 +611,7 @@ export function planFeatures(features, grid, downbeatPhase, loops) {
       }
     }
     if (!f) {
-      const len = Math.min(2.4, Math.max(1.6, barLen));
+      const len = twistLength(barLen);
       if (fits(t - len / 2, t + len / 2)) f = { type: LOOP.TWIST, time: t, start: t - len / 2, end: t + len / 2 };
     }
     if (!f) continue;
@@ -673,10 +694,7 @@ function buildNodes(features, blocks, shapes, sweeps, cfg, rand) {
     let y = LAYOUT.yawAmplitude * noise * (1 - 0.6 * densityAt(t));
     while (si < sweeps.length && t > sweeps[si].end) si++;
     const W = sweeps[si];
-    if (W && t >= W.start) {
-      const s = Math.sin((Math.PI * (t - W.start)) / (W.end - W.start));
-      y += W.dir * W.yaw * s * s;
-    }
+    if (W && t >= W.start) y += sweepYawAt(W, t);
     yaw[k] = y * DEG;
   }
 
@@ -690,9 +708,7 @@ function buildNodes(features, blocks, shapes, sweeps, cfg, rand) {
     const t = -LEAD_IN + k * dt;
     const a = Math.max(0, k - 1), c = Math.min(count - 1, k + 1);
     const w = ((yaw[c] - yaw[a]) / (c - a)) * NODE_RATE;
-    const cap = LAYOUT.bankMax * DEG * (0.35 + 0.65 * intensity[k]);
-    let target = Math.atan((speed[k] * w) / 9.81) * LAYOUT.bankGain;
-    target = Math.max(-cap, Math.min(cap, target));
+    let target = bankTarget(speed[k], w, intensity[k]);
     while (hi < shapes.length && shapes[hi].end < t - LAYOUT.bankFade) hi++;
     let gap = Infinity;
     for (let j = hi; j < shapes.length && shapes[j].start - t < LAYOUT.bankFade; j++) {
