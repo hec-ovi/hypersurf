@@ -4,6 +4,8 @@ import { generateDemoSong } from '../src/audio/demo.js';
 import { analyzeAudio } from '../src/audio/analyze.js';
 import { buildSongMap, BLOCK, LOOP, MODES, LAYOUT, NODE_RATE, LEAD_IN, makeGrid, gridPosition, gridTime } from '../src/audio/songmap.js';
 
+const DEG = Math.PI / 180;
+
 const demo = generateDemoSong();
 const features = analyzeAudio(demo.channels, demo.sampleRate);
 const maps = Object.fromEntries(Object.keys(MODES).map((mode) => [mode, buildSongMap(features, { mode, seed: 'demo' })]));
@@ -205,4 +207,99 @@ test('quiet stretches get half-density beat blocks, but silence stays empty', ()
   assert.ok(inGap.length >= 8 && inGap.length <= 10, `${inGap.length} fillers at half density`);
   for (let i = 1; i < inGap.length; i++) assert.ok(Math.abs(inGap[i].t - inGap[i - 1].t - 1) < 1e-9, 'every other beat');
   assert.equal(fillers.filter((b) => b.t > 40.5 && b.t < 50).length, 0, 'none in silence');
+});
+
+// --- structure features ------------------------------------------------------
+
+/** Every big moment of a map (power-block loops and features), by start. */
+const bigMoments = (map) => [...map.powerBlocks.map((pb) => pb.loop), ...map.features].sort((a, b) => a.start - b.start);
+const nodeAt = (t) => Math.round((t + LEAD_IN) * NODE_RATE);
+
+test('the demo gets twists and flips on its section lines, spaced, none in the intro', (t) => {
+  const bar = (4 * 60) / demo.truth.bpm;
+  for (const [mode, map] of Object.entries(maps)) {
+    t.diagnostic(`${mode}: ${map.features.map((f) => `${Object.keys(LOOP)[f.type]} ${f.time.toFixed(2)}`).join(', ')}; ${map.sweeps.length} sweeps`);
+    assert.ok(map.features.some((f) => f.type === LOOP.TWIST), `${mode}: a twist`);
+    // The break is where the song falls: that is a flip.
+    assert.ok(map.features.some((f) => f.type === LOOP.FLIP && Math.abs(f.time - demo.truth.sections.find((s) => s.name === 'break').start) < 0.1), `${mode}: a flip into the break`);
+    for (const f of map.features) {
+      assert.ok(f.start >= LAYOUT.featureNotBefore, `${mode}: nothing in the first 10 s (${f.start})`);
+      assert.ok(Math.abs(f.time / bar - Math.round(f.time / bar)) * bar < 0.03, `${mode}: ${f.time} is on a bar line`);
+    }
+    const all = bigMoments(map);
+    for (let i = 1; i < all.length; i++) assert.ok(all[i].start - all[i - 1].end >= LAYOUT.featureGap - 1e-9, `${mode}: ${all[i - 1].end} → ${all[i].start}`);
+  }
+  // Deterministic: the same analysis gives the same features and sweeps.
+  const again = buildSongMap(features, { mode: 'mono', seed: 'demo' });
+  assert.deepEqual(again.features, mono.features);
+  assert.deepEqual(again.sweeps, mono.sweeps);
+});
+
+test('twists roll a full turn, flips hold the track upside down, sweeps bank and loops do not', () => {
+  const n = mono.nodes;
+  const upY = (k) => n.up[k * 3 + 1];
+  for (const f of mono.features) {
+    const a = nodeAt(f.start), b = nodeAt(f.end) - 1;
+    assert.ok(Math.abs(n.roll[a]) < 0.02, `level on entry at ${f.start}`);
+    assert.ok(Math.abs(Math.abs(n.roll[b]) - 2 * Math.PI) < 0.05, `a full turn by ${f.end}: ${n.roll[b]}`);
+    if (f.type === LOOP.TWIST) assert.ok(upY(nodeAt(f.time)) < -0.5, 'upside down halfway through a twist');
+    if (f.type === LOOP.FLIP) {
+      for (let k = Math.ceil((f.inEnd + LEAD_IN) * NODE_RATE); k <= Math.floor((f.outStart + LEAD_IN) * NODE_RATE); k++) {
+        assert.ok(Math.abs(Math.abs(n.roll[k]) - Math.PI) < 1e-3, 'held at half a turn');
+        assert.ok(upY(k) < -0.8, `upside down at ${k}`);
+        assert.equal(n.loop[k], LOOP.NONE, 'the upside-down stretch is not marked as a loop');
+      }
+      assert.equal(n.loop[nodeAt((f.start + f.inEnd) / 2)], LOOP.FLIP, 'the half-twists are');
+    }
+  }
+  // Sweeps lean into the curve, within the cap; big moments carry no bank at all.
+  let maxBank = 0;
+  const inBig = (t) => bigMoments(mono).some((m) => t >= m.start - 0.2 && t <= m.end + 0.2);
+  for (let k = 0; k < n.count; k++) {
+    const t = n.t0 + k / n.rate;
+    if (inBig(t)) continue;
+    const cap = LAYOUT.bankMax * DEG * (0.35 + 0.65 * n.intensity[k]) + 1e-6;
+    assert.ok(Math.abs(n.roll[k]) <= Math.max(cap, LAYOUT.bankMax * DEG), `bank at ${t}`);
+    maxBank = Math.max(maxBank, Math.abs(n.roll[k]));
+  }
+  assert.ok(maxBank > 15 * DEG, `sweeps bank (max ${(maxBank / DEG).toFixed(1)}°)`);
+  for (const w of mono.sweeps) {
+    assert.ok(w.start >= LAYOUT.featureNotBefore && w.end - w.start >= LAYOUT.sweepMin);
+    assert.ok(!bigMoments(mono).some((m) => w.start < m.end + LAYOUT.sweepClear - 1e-9 && w.end > m.start - LAYOUT.sweepClear + 1e-9), 'sweeps keep clear of big moments');
+  }
+});
+
+/** Flat-spectrum features whose raw intensity steps through `levels` ([from, level]). */
+function steppedFeatures(levels, duration) {
+  const onsets = [];
+  for (let t = 0; t < duration; t += 0.5) onsets.push({ t, s: 0.5, band: 0 });
+  const f = syntheticFeatures({ duration, onsets });
+  const n = f.intensity.raw.length;
+  for (let k = 0; k < n; k++) {
+    let v = levels[0][1];
+    for (const [from, level] of levels) if (k / 10 >= from) v = level;
+    f.intensity.raw[k] = v;
+    f.intensity.smooth[k] = v;
+  }
+  return f;
+}
+
+test('section changes: a fall is a flip, a rise without a power block a twist; power-block loops stay as they were', () => {
+  const f = steppedFeatures([[0, 0.3], [30, 0.8], [60, 0.2], [90, 0.8], [120, 0.3], [150, 0.9]], 190);
+  // Casual keeps two power blocks: the biggest rises (90 and 150 s), so the smaller one at 30 s is a twist.
+  const map = buildSongMap(f, { mode: 'casual', seed: 'steps' });
+  const half = LAYOUT.loopLength / 2;
+  const pbs = map.powerBlocks.map((pb) => [pb.time, pb.rank, pb.loop.type, pb.loop.start, pb.loop.end]);
+  assert.deepEqual(pbs, [[90, 1, LOOP.DOUBLE, 90 - half, 90 + half], [150, 2, LOOP.PLAIN, 150 - half, 150 + half]]);
+  assert.deepEqual(map.features.map((x) => [x.type, x.time]), [[LOOP.TWIST, 30], [LOOP.FLIP, 60], [LOOP.FLIP, 120]]);
+  const flip = map.features[1];
+  assert.equal(flip.end - flip.start, 4 * 2 + Math.min(2.2, Math.max(1.4, 2)), 'a half-twist, four bars upside down, a half-twist');
+  // Mono has power blocks for every rise, so only the falls are features.
+  const mono3 = buildSongMap(f, { mode: 'mono', seed: 'steps' });
+  assert.deepEqual(mono3.powerBlocks.map((pb) => pb.time), [30, 90, 150]);
+  assert.deepEqual(mono3.features.map((x) => [x.type, x.time]), [[LOOP.FLIP, 60], [LOOP.FLIP, 120]]);
+  // A song that never changes gets no features, only sweeps (after the intro).
+  const flat = buildSongMap(steppedFeatures([[0, 0.5]], 120), { seed: 'flat' });
+  assert.equal(flat.features.length, 0);
+  assert.ok(flat.sweeps.length > 0 && flat.sweeps.every((w) => w.start >= LAYOUT.featureNotBefore));
 });

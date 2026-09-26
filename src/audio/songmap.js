@@ -4,6 +4,12 @@
 //   blocks   one per onset (snapped to the beat grid), density-capped per
 //            mode, with greys, chain spans and deterministic musical lanes
 //   power    power blocks at the biggest rises in energy, each with a loop
+//   features spectacle tied to the song's structure: twists (a 360° roll of
+//            the track) at strong section changes, a flip (a half-twist
+//            into an upside-down stretch and another out) where the song
+//            falls into a calmer section, and banked sweeping curves in
+//            between whose bank follows intensity. At most one big moment
+//            (loop, twist or flip) per 8 s of gap, none in the first 10 s.
 //
 // Pure and deterministic: the same features, mode and seed always give the
 // same map (and the same hash). All randomness comes from a PRNG seeded by
@@ -13,14 +19,21 @@ import { mulberry32, seedFromString, Hasher } from './random.js';
 import { sampleSeries } from './dsp.js';
 import { gradientAt } from '../game/palette.js';
 
-export const SONGMAP_VERSION = 1;
+export const SONGMAP_VERSION = 2;
 export const NODE_RATE = 30;
 /** Seconds of track before the song starts (swoop-in) and after it ends. */
 export const LEAD_IN = 3;
 export const TAIL = 3;
 
 export const BLOCK = Object.freeze({ COLOUR: 0, GREY: 1, POWER: 2 });
-export const LOOP = Object.freeze({ NONE: 0, PLAIN: 1, CORKSCREW: 2, DOUBLE: 3 });
+/**
+ * Shapes the track takes (map.nodes.loop marks their rolling nodes).
+ * PLAIN: a vertical 360° loop; CORKSCREW / DOUBLE: one or two barrel rolls
+ * around an axis above the track; TWIST: a 360° roll of the track about
+ * its own centre; FLIP: a half-twist into an upside-down stretch and a
+ * half-twist out (only the twists are marked in nodes.loop).
+ */
+export const LOOP = Object.freeze({ NONE: 0, PLAIN: 1, CORKSCREW: 2, DOUBLE: 3, TWIST: 4, FLIP: 5 });
 
 /**
  * Mode parameters. Speeds in m/s (lane spacing is 3 m); maxRate is the
@@ -60,6 +73,24 @@ export const LAYOUT = Object.freeze({
   yawAmplitude: 15,
   corkscrewRadius: 6,
   loopSideShift: 14,
+  // Structure features (twists, flips, sweeps).
+  featureNotBefore: 10, // no big moment starts in the first 10 s
+  featureGap: 8, // seconds between any two big moments (loops, twists, flips)
+  featureNovelty: 1.8, // section-change score (× the song's typical bar-to-bar change) a twist or flip needs
+  flipFall: 0.15, // intensity fall across a section change that makes it a flip
+  flipBars: 4, // bars upside down (from the change to the half-twist out)
+  maxFlips: 2,
+  twistRadius: 1.2, // twists and flips roll about a line this far above the surface
+  sweepClear: 2, // seconds a sweep keeps from any big moment
+  sweepMin: 6, // shortest sweep, seconds
+  sweepBars: 8,
+  sweepIntensity: 0.3, // quieter stretches stay straight
+  sweepYaw: 14, // degrees of heading swing at intensity 0, plus sweepYawI · I
+  sweepYawI: 22,
+  bankGain: 0.8, // of the banking a real curve at this speed would want
+  bankMax: 30, // degrees, scaled by 0.35 + 0.65 · I
+  bankRate: 40, // degrees per second
+  bankFade: 1.5, // seconds over which the bank fades out next to a big moment
 });
 
 const DEG = Math.PI / 180;
@@ -397,11 +428,214 @@ function enforceSpacing(blocks, rand) {
   }
 }
 
-// --- nodes -------------------------------------------------------------------
+// --- shapes ------------------------------------------------------------------
 
 const smootherstep = (u) => (u <= 0 ? 0 : u >= 1 ? 1 : u * u * u * (u * (6 * u - 15) + 10));
+/** d/du of smootherstep. */
+const smootherstepRate = (u) => (u <= 0 || u >= 1 ? 0 : 30 * u * u * (1 - u) * (1 - u));
 
-function buildNodes(features, blocks, loops, cfg, rand) {
+/** A reusable record for shapePose. */
+export function makePose() {
+  return { pitch: 0, roll: 0, rollRate: 0, side: 0, sideRate: 0, radius: 0, mark: 0 };
+}
+
+/**
+ * The pose a shape gives the track at song time t (start ≤ t ≤ end),
+ * written into `out`: extra pitch (a plain loop), roll about a line
+ * `radius` above the surface and its rate, the sideways shift that keeps a
+ * plain loop from meeting itself and its rate, and the nodes.loop mark.
+ * The file and live maps share it, so a loop is the same shape in both.
+ */
+export function shapePose(S, t, out) {
+  const len = S.end - S.start;
+  const u = (t - S.start) / len;
+  const e = smootherstep(u), de = smootherstepRate(u) / len;
+  out.pitch = 0; out.roll = 0; out.rollRate = 0; out.side = 0; out.sideRate = 0; out.radius = 0; out.mark = S.type;
+  const dir = S.dir || 1;
+  switch (S.type) {
+    case LOOP.PLAIN:
+      out.pitch = 2 * Math.PI * e;
+      out.side = LAYOUT.loopSideShift * e;
+      out.sideRate = LAYOUT.loopSideShift * de;
+      break;
+    case LOOP.CORKSCREW:
+    case LOOP.DOUBLE: {
+      const turns = S.type === LOOP.DOUBLE ? 2 : 1;
+      out.roll = 2 * Math.PI * turns * e;
+      out.rollRate = 2 * Math.PI * turns * de;
+      out.radius = LAYOUT.corkscrewRadius;
+      break;
+    }
+    case LOOP.TWIST:
+      out.roll = dir * 2 * Math.PI * e;
+      out.rollRate = dir * 2 * Math.PI * de;
+      out.radius = LAYOUT.twistRadius;
+      break;
+    case LOOP.FLIP: {
+      // Half-twist in, upside down, half-twist on round (a full turn in all).
+      out.radius = LAYOUT.twistRadius;
+      if (t < S.inEnd) {
+        const w = S.inEnd - S.start, v = (t - S.start) / w;
+        out.roll = dir * Math.PI * smootherstep(v);
+        out.rollRate = (dir * Math.PI * smootherstepRate(v)) / w;
+      } else if (t <= S.outStart) {
+        out.roll = dir * Math.PI;
+        out.mark = 0;
+      } else {
+        const w = S.end - S.outStart, v = (t - S.outStart) / w;
+        out.roll = dir * Math.PI * (1 + smootherstep(v));
+        out.rollRate = (dir * Math.PI * smootherstepRate(v)) / w;
+      }
+      break;
+    }
+  }
+  return out;
+}
+
+/** Bar start times (from the downbeat) inside [0, duration]. */
+function barTimes(grid, downbeatPhase, duration) {
+  const first = grid.offset + downbeatPhase;
+  const out = [];
+  for (let b = Math.ceil(-first / 4); ; b++) {
+    const t = gridTime(grid, first + 4 * b);
+    if (t > duration) break;
+    if (t >= 0) out.push(t);
+  }
+  return out;
+}
+
+const overlaps = (a0, a1, list, gap) => list.some((o) => a0 < o.end + gap && a1 > o.start - gap);
+
+/**
+ * Structure features, deterministic from the analysis.
+ *
+ * Section changes are scored at every bar line: the spectral distance
+ * between the two bars after it and the two before, over the song's
+ * median (so a chord cycle is the norm, not a change), plus four times
+ * the intensity step between the two bars either side. Local peaks scoring at
+ * least featureNovelty become big moments, strongest first, each keeping
+ * featureGap seconds from every other one and from the power-block loops,
+ * none starting in the first featureNotBefore seconds: a fall of
+ * flipFall or more is a flip (up to maxFlips), anything else a twist.
+ * Twists and flips alternate direction.
+ *
+ * The stretches between big moments (less sweepClear either side), cut
+ * at most sweepBars long on bar lines, get a sweeping curve when their
+ * mean intensity reaches sweepIntensity.
+ *
+ * @param loops  the power-block loops ({ start, end })
+ * @returns { features: [{ type, time, start, end, dir, inEnd?, outStart?, score }], sweeps: [{ start, end, yaw, dir }] }
+ */
+export function planFeatures(features, grid, downbeatPhase, loops) {
+  const duration = features.duration;
+  const bars = barTimes(grid, downbeatPhase, duration);
+  const nb = bars.length;
+  const out = { features: [], sweeps: [] };
+  if (nb < 4) return out;
+  const barLen = 4 * grid.period;
+
+  // Per-bar mean spectrum (skyline bands) and intensity.
+  const sky = features.skyline, dims = features.skylineBands || 16, fr = features.frameRate;
+  const frames = sky ? Math.floor(sky.length / dims) : 0;
+  const spec = new Float64Array(nb * dims);
+  for (let j = 0; j < nb; j++) {
+    const a = Math.min(frames, Math.round(bars[j] * fr));
+    const b = Math.min(frames, Math.max(a + 1, Math.round((j + 1 < nb ? bars[j + 1] : bars[j] + barLen) * fr)));
+    for (let f = a; f < b; f++) for (let d = 0; d < dims; d++) spec[j * dims + d] += sky[f * dims + d];
+    if (b > a) for (let d = 0; d < dims; d++) spec[j * dims + d] /= b - a;
+  }
+  const I = features.intensity.raw, rate = features.intensity.rate;
+  const meanI = (t0, t1) => {
+    const a = Math.max(0, Math.round(t0 * rate)), b = Math.min(I.length, Math.max(a + 1, Math.round(t1 * rate)));
+    let acc = 0;
+    for (let k = a; k < b; k++) acc += I[k];
+    return b > a ? acc / (b - a) : 0;
+  };
+  const dist = new Float64Array(nb), dI = new Float64Array(nb);
+  for (let j = 1; j < nb; j++) {
+    const lo = Math.max(0, j - 2), hi = Math.min(nb, j + 2);
+    let d = 0;
+    for (let c = 0; c < dims; c++) {
+      let before = 0, after = 0;
+      for (let k = lo; k < j; k++) before += spec[k * dims + c];
+      for (let k = j; k < hi; k++) after += spec[k * dims + c];
+      d += Math.abs(after / (hi - j) - before / (j - lo));
+    }
+    dist[j] = d;
+    dI[j] = meanI(bars[j], bars[j] + 2 * barLen) - meanI(bars[j] - 2 * barLen, bars[j]);
+  }
+  const med = Float64Array.from(dist.subarray(1)).sort()[(nb - 1) >> 1] || 0;
+  const score = new Float64Array(nb);
+  for (let j = 1; j < nb; j++) score[j] = q((med > 1e-9 ? dist[j] / med : 0) + 4 * Math.abs(dI[j]), 1e-4);
+  const peaks = [];
+  for (let j = 1; j < nb; j++) {
+    if (score[j] < LAYOUT.featureNovelty) continue;
+    if ((j > 1 && score[j - 1] > score[j]) || (j + 1 < nb && score[j + 1] >= score[j])) continue;
+    peaks.push(j);
+  }
+  peaks.sort((a, b) => score[b] - score[a] || a - b);
+
+  const taken = loops.map((l) => ({ start: l.start, end: l.end }));
+  const fits = (s, e) => s >= LAYOUT.featureNotBefore && e <= duration - 3 && !overlaps(s, e, taken, LAYOUT.featureGap);
+  let flips = 0;
+  for (const j of peaks) {
+    const t = bars[j];
+    let f = null;
+    if (dI[j] <= -LAYOUT.flipFall && flips < LAYOUT.maxFlips && j + LAYOUT.flipBars < nb) {
+      const half = Math.min(2.2, Math.max(1.4, barLen));
+      const start = t - half / 2, end = bars[j + LAYOUT.flipBars] + half / 2;
+      if (fits(start, end)) {
+        f = { type: LOOP.FLIP, time: t, start, end, inEnd: start + half, outStart: end - half };
+        flips++;
+      }
+    }
+    if (!f) {
+      const len = Math.min(2.4, Math.max(1.6, barLen));
+      if (fits(t - len / 2, t + len / 2)) f = { type: LOOP.TWIST, time: t, start: t - len / 2, end: t + len / 2 };
+    }
+    if (!f) continue;
+    f.score = score[j];
+    out.features.push(f);
+    taken.push(f);
+  }
+  out.features.sort((a, b) => a.time - b.time);
+  out.features.forEach((f, i) => { f.dir = i % 2 === 0 ? 1 : -1; });
+
+  // Sweeps in the stretches between big moments.
+  const busy = taken.slice().sort((a, b) => a.start - b.start);
+  const clear = LAYOUT.sweepClear;
+  let from = LAYOUT.featureNotBefore, dir = 1;
+  for (let i = 0; i <= busy.length; i++) {
+    const to = i < busy.length ? busy[i].start - clear : duration - 2;
+    let a = from;
+    while (to - a >= LAYOUT.sweepMin) {
+      // Cut on bar lines: at most sweepBars long, never leaving a stub under sweepMin.
+      let b = Math.min(to, a + LAYOUT.sweepBars * barLen);
+      if (to - b < LAYOUT.sweepMin) b = to;
+      else {
+        let k = 0;
+        while (k < nb && bars[k] <= b) k++;
+        if (k > 0 && bars[k - 1] - a >= LAYOUT.sweepMin) b = bars[k - 1];
+      }
+      const m = meanI(a, b);
+      if (m >= LAYOUT.sweepIntensity) {
+        out.sweeps.push({ start: a, end: b, yaw: q(LAYOUT.sweepYaw + LAYOUT.sweepYawI * m, 1e-3), dir });
+        dir = -dir;
+      }
+      a = b;
+    }
+    if (i < busy.length) from = Math.max(from, busy[i].end + clear);
+  }
+  return out;
+}
+
+// --- nodes -------------------------------------------------------------------
+
+/**
+ * @param shapes  loops and big features, sorted by start, never overlapping
+ * @param sweeps  sweeping curves ({ start, end, yaw (degrees), dir })
+ */
+function buildNodes(features, blocks, shapes, sweeps, cfg, rand) {
   const duration = features.duration;
   const count = Math.ceil((LEAD_IN + duration + TAIL) * NODE_RATE) + 1;
   const dt = 1 / NODE_RATE;
@@ -423,12 +657,8 @@ function buildNodes(features, blocks, loops, cfg, rand) {
     return Math.min(1, c / (4 * cfg.maxRate));
   };
 
-  let p = 0, li = 0;
-  const base = [0, 0, 0];
-  const offsets = new Float64Array(count * 3);
-  const upBase = new Float64Array(count * 3);
-  const rightBase = new Float64Array(count * 3);
-  const rgb = [0, 0, 0];
+  // Speed, slope and heading (noise plus the sweeping curves).
+  let p = 0, si = 0;
   for (let k = 0; k < count; k++) {
     const t = -LEAD_IN + k * dt;
     const i = sampleSeries(I, rate, Math.min(duration, Math.max(0, t)));
@@ -437,26 +667,62 @@ function buildNodes(features, blocks, loops, cfg, rand) {
     const target = i < 0.5 ? (LAYOUT.pitchUp * (0.5 - i)) / 0.5 : (-LAYOUT.pitchDown * (i - 0.5)) / 0.5;
     const maxStep = LAYOUT.pitchRate * dt;
     p += Math.max(-maxStep, Math.min(maxStep, target - p));
+    pitch[k] = p * DEG;
     let noise = 0;
     for (const [f, a, ph] of waves) noise += a * Math.sin(2 * Math.PI * f * t + ph);
-    const y = LAYOUT.yawAmplitude * noise * (1 - 0.6 * densityAt(t));
-
-    while (li < loops.length && t > loops[li].end) li++;
-    const L = loops[li];
-    let loopPitch = 0, rho = 0, side = 0;
-    if (L && t >= L.start && t <= L.end) {
-      const e = smootherstep((t - L.start) / (L.end - L.start));
-      loop[k] = L.type;
-      if (L.type === LOOP.PLAIN) { loopPitch = 2 * Math.PI * e; side = LAYOUT.loopSideShift * e; }
-      else rho = (L.type === LOOP.DOUBLE ? 4 : 2) * Math.PI * e;
+    let y = LAYOUT.yawAmplitude * noise * (1 - 0.6 * densityAt(t));
+    while (si < sweeps.length && t > sweeps[si].end) si++;
+    const W = sweeps[si];
+    if (W && t >= W.start) {
+      const s = Math.sin((Math.PI * (t - W.start)) / (W.end - W.start));
+      y += W.dir * W.yaw * s * s;
     }
-    // Plain loops leave the track shifted sideways; keep that shift afterwards.
-    for (let j = 0; j < li; j++) if (loops[j].type === LOOP.PLAIN) side += LAYOUT.loopSideShift;
-
-    pitch[k] = p * DEG;
     yaw[k] = y * DEG;
-    roll[k] = rho;
-    const pr = p * DEG + loopPitch, yr = y * DEG;
+  }
+
+  // Bank into the curves: a share of what the turn at this speed would
+  // want, capped by intensity, faded out next to every loop and feature
+  // and rate limited.
+  const bank = new Float64Array(count);
+  let b = 0, hi = 0;
+  const bankStep = LAYOUT.bankRate * DEG * dt;
+  for (let k = 0; k < count; k++) {
+    const t = -LEAD_IN + k * dt;
+    const a = Math.max(0, k - 1), c = Math.min(count - 1, k + 1);
+    const w = ((yaw[c] - yaw[a]) / (c - a)) * NODE_RATE;
+    const cap = LAYOUT.bankMax * DEG * (0.35 + 0.65 * intensity[k]);
+    let target = Math.atan((speed[k] * w) / 9.81) * LAYOUT.bankGain;
+    target = Math.max(-cap, Math.min(cap, target));
+    while (hi < shapes.length && shapes[hi].end < t - LAYOUT.bankFade) hi++;
+    let gap = Infinity;
+    for (let j = hi; j < shapes.length && shapes[j].start - t < LAYOUT.bankFade; j++) {
+      gap = Math.min(gap, Math.max(0, shapes[j].start - t, t - shapes[j].end));
+    }
+    if (gap < LAYOUT.bankFade) target *= smootherstep(gap / LAYOUT.bankFade);
+    b += Math.max(-bankStep, Math.min(bankStep, target - b));
+    bank[k] = b;
+  }
+
+  let li = 0, side = 0;
+  const pose = makePose();
+  const base = [0, 0, 0];
+  const offsets = new Float64Array(count * 3);
+  const upBase = new Float64Array(count * 3);
+  const rgb = [0, 0, 0];
+  for (let k = 0; k < count; k++) {
+    const t = -LEAD_IN + k * dt;
+    // Plain loops leave the track shifted sideways; keep that shift afterwards.
+    while (li < shapes.length && t > shapes[li].end) {
+      if (shapes[li].type === LOOP.PLAIN) side += LAYOUT.loopSideShift;
+      li++;
+    }
+    const S = shapes[li];
+    if (S && t >= S.start) shapePose(S, t, pose);
+    else { pose.pitch = 0; pose.roll = 0; pose.side = 0; pose.radius = 0; pose.mark = 0; }
+    loop[k] = pose.mark;
+    const rho = pose.roll, R = pose.radius, lean = rho + bank[k];
+    roll[k] = lean;
+    const pr = pitch[k] + pose.pitch, yr = yaw[k];
     const cp = Math.cos(pr), sp = Math.sin(pr), cy = Math.cos(yr), sy = Math.sin(yr);
     const f = [sy * cp, sp, -cy * cp];
     const u = [-sy * sp, cp, cy * sp];
@@ -466,15 +732,14 @@ function buildNodes(features, blocks, loops, cfg, rand) {
       dist[k] = dist[k - 1] + ds;
       for (let c = 0; c < 3; c++) base[c] += f[c] * ds;
     }
-    const R = LAYOUT.corkscrewRadius;
-    const rightFlat = [cy, 0, sy];
+    const rightFlat = [cy, 0, sy], sh = side + pose.side;
+    const cl = Math.cos(lean), sl = Math.sin(lean);
     for (let c = 0; c < 3; c++) {
-      offsets[k * 3 + c] = R * (1 - Math.cos(rho)) * u[c] - R * Math.sin(rho) * r[c] + side * rightFlat[c];
+      offsets[k * 3 + c] = R * (1 - Math.cos(rho)) * u[c] - R * Math.sin(rho) * r[c] + sh * rightFlat[c];
       pos[k * 3 + c] = base[c];
-      upBase[k * 3 + c] = Math.cos(rho) * u[c] + Math.sin(rho) * r[c];
-      rightBase[k * 3 + c] = r[c];
+      upBase[k * 3 + c] = cl * u[c] + sl * r[c];
     }
-    gradientAt(i, rgb);
+    gradientAt(intensity[k], rgb);
     color[k * 3] = rgb[0]; color[k * 3 + 1] = rgb[1]; color[k * 3 + 2] = rgb[2];
   }
   // Final positions, re-based so the node at song time 0 is the origin.
@@ -546,7 +811,9 @@ export function buildSongMap(features, { mode = 'mono', seed = 'demo', maxRate }
     start: pb.time - LAYOUT.loopLength / 2,
     end: pb.time + LAYOUT.loopLength / 2,
   }));
-  const nodes = buildNodes(features, blocks, loops, cfg, rand);
+  const plan = planFeatures(features, grid, downbeatPhase, loops);
+  const shapes = [...loops, ...plan.features].sort((a, b) => a.start - b.start);
+  const nodes = buildNodes(features, blocks, shapes, plan.sweeps, cfg, rand);
 
   const n = blocks.length;
   const out = {
@@ -573,6 +840,8 @@ export function buildSongMap(features, { mode = 'mono', seed = 'demo', maxRate }
     nodes,
     blocks: out,
     powerBlocks: power.map((pb) => ({ ...pb, loop: loops.find((l) => l.time === pb.time) })),
+    features: plan.features,
+    sweeps: plan.sweeps,
     skyline: { rate: features.frameRate, bands: features.skylineBands, data: features.skyline.slice() },
     skipIntroTo,
     stats: {
@@ -606,5 +875,7 @@ export function songMapHash(map) {
   const nd = map.nodes;
   h.array(nd.pos, 1e-3).array(nd.up, 1e-4).array(nd.speed, 1e-3).array(nd.intensity, 1e-4).array(nd.loop, 1);
   for (const pb of map.powerBlocks) h.num(pb.time, 1e-4).int(pb.rank).int(pb.loop.type);
+  for (const f of map.features) h.int(f.type).num(f.start, 1e-4).num(f.end, 1e-4).int(f.dir);
+  for (const w of map.sweeps) h.num(w.start, 1e-4).num(w.end, 1e-4).num(w.yaw, 1e-3).int(w.dir);
   return h.digest();
 }
