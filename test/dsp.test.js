@@ -71,3 +71,12 @@ test('percentile, downmix and attack/release smoothing behave', () => {
   const down = smoothAttackRelease(Float32Array.from({ length: 100 }, (_, i) => (i < 50 ? 1 : 0)), 10, 0.1, 1);
   assert.ok(down[60] > 0.3, 'slow release');
 });
+
+test('resampling handles 48 kHz and non-integer rates with unit DC gain', () => {
+  const dc = new Float32Array(48000).fill(0.5);
+  for (const [from, to] of [[48000, 22050], [44100, 22050], [22050.5, 22050]]) {
+    const y = resample(dc, from, to);
+    const mid = y[y.length >> 1];
+    assert.ok(Math.abs(mid - 0.5) < 1e-4, `${from}->${to}: ${mid}`);
+  }
+});

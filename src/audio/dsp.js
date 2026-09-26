@@ -91,10 +91,16 @@ function besselI0(x) {
   return sum;
 }
 
+function gcd(a, b) {
+  while (b) [a, b] = [b, a % b];
+  return a;
+}
+
 /**
- * Band-limited resampling with a Kaiser-windowed sinc kernel read from a
- * finely sampled table. `zeros` is the number of zero crossings per side at
- * the output rate; `rolloff` places the cutoff just below the lower Nyquist.
+ * Band-limited resampling with a Kaiser-windowed sinc kernel. `zeros` is the
+ * number of zero crossings per side at the lower rate; `rolloff` places the
+ * cutoff just below the lower Nyquist. Integer rate pairs use a polyphase
+ * table (one precomputed kernel per output phase, normalised to unit DC gain).
  */
 export function resample(input, fromRate, toRate, { zeros = 12, rolloff = 0.945, beta = 8.6 } = {}) {
   if (fromRate === toRate) return Float32Array.from(input);
@@ -103,33 +109,64 @@ export function resample(input, fromRate, toRate, { zeros = 12, rolloff = 0.945,
   const out = new Float32Array(outLen);
   const fc = 0.5 * Math.min(1, ratio) * rolloff; // cycles per input sample
   const halfWidth = zeros / (2 * fc); // input samples
-  const res = 256; // table points per input sample
-  const tableLen = Math.ceil(halfWidth * res) + 2;
-  const table = new Float32Array(tableLen);
   const i0b = besselI0(beta);
-  for (let i = 0; i < tableLen; i++) {
-    const t = i / res;
+  const kernel = (t) => {
     const x = t / halfWidth;
-    if (x >= 1) { table[i] = 0; continue; }
+    if (x <= -1 || x >= 1) return 0;
     const arg = 2 * Math.PI * fc * t;
-    const sinc = t === 0 ? 1 : Math.sin(arg) / arg;
-    table[i] = 2 * fc * sinc * (besselI0(beta * Math.sqrt(1 - x * x)) / i0b);
+    const sinc = arg === 0 ? 1 : Math.sin(arg) / arg;
+    return 2 * fc * sinc * (besselI0(beta * Math.sqrt(1 - x * x)) / i0b);
+  };
+  const K = Math.ceil(halfWidth);
+  const taps = 2 * K;
+  const intRates = Number.isInteger(fromRate) && Number.isInteger(toRate);
+  const g = intRates ? gcd(fromRate, toRate) : 1;
+  const P = fromRate / g, Q = toRate / g; // output j sits at input position j·P/Q
+  if (!intRates || Q > 4096) return resampleDirect(input, out, fromRate / toRate, halfWidth, kernel);
+  // Phase q has fractional offset q/Q; tap k reads input[base - K + 1 + k].
+  const table = new Float32Array(Q * taps);
+  for (let q = 0; q < Q; q++) {
+    let sum = 0;
+    for (let k = 0; k < taps; k++) {
+      const w = kernel(-K + 1 + k - q / Q);
+      table[q * taps + k] = w;
+      sum += w;
+    }
+    for (let k = 0; k < taps; k++) table[q * taps + k] /= sum;
   }
-  const step = fromRate / toRate;
   const n = input.length;
+  let base = 0, q = 0;
   for (let j = 0; j < outLen; j++) {
+    const first = base - K + 1, off = q * taps;
+    let acc = 0;
+    if (first >= 0 && first + taps <= n) {
+      for (let k = 0; k < taps; k++) acc += table[off + k] * input[first + k];
+    } else {
+      // Edges: treat samples outside the signal as silence.
+      for (let k = 0; k < taps; k++) {
+        const i = first + k;
+        if (i >= 0 && i < n) acc += table[off + k] * input[i];
+      }
+    }
+    out[j] = acc;
+    q += P;
+    while (q >= Q) { q -= Q; base++; }
+  }
+  return out;
+}
+
+function resampleDirect(input, out, step, halfWidth, kernel) {
+  const n = input.length;
+  for (let j = 0; j < out.length; j++) {
     const center = j * step;
     const lo = Math.max(0, Math.ceil(center - halfWidth));
     const hi = Math.min(n - 1, Math.floor(center + halfWidth));
     let acc = 0, norm = 0;
     for (let i = lo; i <= hi; i++) {
-      const d = Math.abs(i - center) * res;
-      const k = d | 0, f = d - k;
-      const w = table[k] + (table[k + 1] - table[k]) * f;
+      const w = kernel(i - center);
       acc += w * input[i];
       norm += w;
     }
-    // Normalise the DC gain; kernel sums differ slightly between phases and at the edges.
     out[j] = norm > 1e-9 ? acc / norm : 0;
   }
   return out;
