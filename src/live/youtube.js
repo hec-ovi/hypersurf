@@ -17,6 +17,16 @@
 const ID = /^[A-Za-z0-9_-]{11}$/;
 
 /**
+ * Song presets on the video screen: official, embeddable uploads, played
+ * through the embed like any pasted link (no audio is ever shipped). Nyan
+ * Cat is Chris Torres's own upload on the official NyanCat channel
+ * (@nyancat); its oEmbed answered 200 on 2026-09-26.
+ */
+export const PRESETS = Object.freeze({
+  nyan: Object.freeze({ label: 'Nyan Cat', link: 'https://www.youtube.com/watch?v=2yJgwwDcgV8' }),
+});
+
+/**
  * The 11-character video ID from a pasted link or bare ID, or null.
  * Accepts watch, youtu.be, embed, shorts, live and music links.
  */

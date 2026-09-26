@@ -19,7 +19,7 @@ import { Analyzer } from './audio/analyzer.js';
 import { SongPlayer, copyChannels, toAudioBuffer } from './audio/player.js';
 import { LEAD_IN, TAIL, makeGrid } from './audio/songmap.js';
 import { Sfx } from './audio/sfx.js';
-import { parseVideoId, YouTubePlayer, needsPlay, STATE as VIDEO } from './live/youtube.js';
+import { parseVideoId, YouTubePlayer, needsPlay, PRESETS, STATE as VIDEO } from './live/youtube.js';
 import { captureSupport, captureTabAudio, stopStream, CAPTURE_MESSAGES } from './live/capture.js';
 import { LiveSession, LiveClock, SESSION } from './live/session.js';
 import { LiveMap } from './live/livemap.js';
@@ -427,7 +427,7 @@ function loadVideo(id) {
     if (current() && yt.ready && !yt.error) {
       videoStatus('Video found', 'ok');
       canStart(true);
-      if (app.state === 'video' && document.activeElement === $('yt-input')) focus.focus($('live-start'));
+      if (app.state === 'video' && [$('yt-input'), $('yt-nyan')].includes(document.activeElement)) focus.focus($('live-start'));
     }
   }, (err) => {
     if (current()) videoStatus(err.userMessage || 'The YouTube player could not be loaded.', 'bad');
@@ -1640,6 +1640,10 @@ function wireUi() {
     if (!$('live-start').disabled) startYouTube();
   });
   $('live-start').addEventListener('click', startYouTube);
+  $('yt-nyan').addEventListener('click', () => {
+    link.value = PRESETS.nyan.link;
+    onLinkInput(); // Start takes focus once the video is found
+  });
   $('yt-file').addEventListener('click', () => setState('file'));
   $('yt-demo').addEventListener('click', playDemo);
   const octave = { values: [-1, 0, 1], label: (v) => OCTAVE_TEXT[v], get: () => app.octave, set: setOctave };

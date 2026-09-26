@@ -329,6 +329,12 @@ input[type=range].hr:focus::-moz-range-thumb { background: var(--gold); border-c
 .chip::after { content: ""; position: absolute; left: 0; top: 6px; bottom: 0; width: 1px; background: currentColor; }
 .chip.lime { color: var(--lime); }
 .chip.warn { color: var(--warn); }
+/* Song presets under the video link: a chip button; the Nyan Cat one glows a little while the NYAN vehicle is chosen. */
+.presets { margin-top: 12px; display: flex; align-items: center; gap: 12px; }
+button.chip { cursor: pointer; outline: none; transition: color 160ms, text-shadow 160ms; }
+button.chip:hover, button.chip:focus-visible { color: var(--gold); }
+body[data-vehicle="nyan"] #yt-nyan { color: var(--lime); text-shadow: 0 0 8px var(--lime); }
+body[data-vehicle="nyan"] #yt-nyan:hover, body[data-vehicle="nyan"] #yt-nyan:focus-visible { color: var(--gold); }
 
 /* ================================================================= main menu */
 .menu { display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, .95fr); }

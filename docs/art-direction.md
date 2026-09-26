@@ -595,6 +595,7 @@ The docked sidebar in the image above is **replaced**. The owner played a real v
 
 - A 680px panel titled `VIDEO`, subtitle `PLAY ALONG WITH A YOUTUBE VIDEO · LIVE LISTEN`.
 - A `VIDEO LINK` field: an underline input with a link glyph and Oxanium 19px text. Status under it: `◆ VIDEO FOUND` in lime once the player is ready, `LOADING VIDEO` in `--text-2`, or an error in `--red`.
+- Under the status, `OR TRY` in `micro` and a **NYAN CAT** chip button that fills in the official upload (Chris Torres's NyanCat channel) so START is ready. The chip turns lime with a soft glow while the NYAN vehicle is chosen. The song plays only through the embed; no audio ships with the game.
 - **BLOCKS PER BEAT** as an arrow selector `‹ 1 ›` (½ / 1 / 2).
 - One line explaining the share prompt: "Start asks to share this tab. Keep “Also share tab audio” on: the game listens to the video's sound to find the beat. Nothing is recorded, stored or sent."
 - The legal line in `micro`: `Video plays in YouTube's own player · YouTube Terms · Google Privacy Policy`, then the user-responsibility sentence.
