@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { LiveMap, LIVE, STATUS } from '../src/live/livemap.js';
-import { BLOCK, LEAD_IN } from '../src/audio/songmap.js';
+import { BLOCK, LEAD_IN, LOOP } from '../src/audio/songmap.js';
 import { TrackPath, makeSample } from '../src/game/trackpath.js';
 import { DRAW_DISTANCE_M } from './live-fixtures.js';
 
@@ -73,7 +73,7 @@ test('blocks land on the beats, turn solid when beats are confirmed, and never m
   const map = new LiveMap({ mode: 'mono' });
   const solidAt = new Map();
   drive(map, {
-    until: 40, grid: steady(128, 0.1), heard: drums(128, 0.1),
+    until: 50, grid: steady(128, 0.1), heard: drums(128, 0.1),
     each: (t, m) => {
       const b = m.blocks;
       for (let i = 0; i < b.count; i++) {
@@ -104,10 +104,10 @@ test('blocks land on the beats, turn solid when beats are confirmed, and never m
   }
   assert.ok(beats > 40 && offs > 40);
   assert.ok(beatCentre / beats > 0.4 && offOuter / offs > 0.6, `centre ${beatCentre}/${beats}, outer ${offOuter}/${offs}`);
-  // Sixteen locked bars earn a power block.
+  // Sixteen locked bars earn a power block; without phrases it waits four more bars, then takes a bar line ahead.
   const pbs = [];
   for (let i = 0; i < b.count; i++) if (b.type[i] === BLOCK.POWER) pbs.push(b.time[i]);
-  assert.ok(pbs.length >= 1 && pbs[0] > 3 + 64 * T && pbs[0] < 3 + 72 * T + 3, `power blocks at ${pbs}`);
+  assert.ok(pbs.length >= 1 && pbs[0] > 3 + (64 + LIVE.pbWait) * T + LIVE.loopLead && pbs[0] < 3 + (64 + LIVE.pbWait) * T + LIVE.loopLead + 4 * T, `power blocks at ${pbs}`);
 });
 
 test('ghosts that no beat confirms fade out and are withdrawn', () => {
@@ -236,4 +236,202 @@ test('the rules play a live map: blocks arrive as it grows, withdrawn ghosts nev
   assert.equal(s.colour + s.grey + s.power, map.blocks.count - withdrawn, 'withdrawn blocks leave the tallies');
   assert.ok(s.colourHit > 0.8 * s.colour - 20, `bot took ${s.colourHit} of ${s.colour}`);
   assert.ok(collected > 0 && results.raw >= collected);
+});
+
+// --- bars, phrases and loops ----------------------------------------------------
+
+const SONG_T = 60 / 128, SONG_BAR = 4 * SONG_T;
+
+/**
+ * A song heard live at 128 BPM, bar lines from 0 s: intro (bars 0-7),
+ * verse (8-15), a build (16-23: a snare roll from quarters to sixteenths,
+ * rising intensity, the kick out for its last two bars) and, from bar 24
+ * (45 s), a drop, or with drop: false the song just thins out. Onsets go
+ * to the map; so do skyline frames (a chord per bar, kick/snare colour).
+ */
+function liveSong({ drop = true } = {}) {
+  const section = (bar) => (bar < 8 ? 0 : bar < 16 ? 1 : bar < 24 ? 2 : 3);
+  const level = (t) => {
+    const bar = Math.floor(t / SONG_BAR), s = section(Math.max(0, bar));
+    if (s === 0) return 0.35;
+    if (s === 1) return 0.55;
+    if (s === 2) return 0.55 + 0.05 * (bar - 16 + (t % SONG_BAR) / SONG_BAR);
+    return drop ? 0.95 : 0.3;
+  };
+  const sixteenth = SONG_T / 4, rate = 50;
+  const levels = new Uint8Array(16);
+  const heard = (t0, t1, map) => {
+    map.setSkylineRate(rate);
+    for (let k = Math.max(0, Math.ceil(t0 / sixteenth)); k * sixteenth <= t1; k++) {
+      const t = k * sixteenth;
+      if (t <= t0) continue;
+      const bar = Math.floor(k / 16), s = section(bar), beat = k % 4 === 0, inBar = (k >> 2) % 4;
+      const kick = beat && (s < 2 || (s === 2 && bar < 22) || (s === 3 && drop));
+      let strongest = 0, band = 0;
+      if (kick) { strongest = s === 3 ? 1 : 0.8; band = 0; }
+      if (s === 2) {
+        const step = bar < 20 ? 4 : bar < 22 ? 2 : 1;
+        if (k % step === 0 && 0.45 + 0.06 * (bar - 16) > strongest) { strongest = 0.45 + 0.06 * (bar - 16); band = 1; }
+      } else if (s >= 1 && beat && inBar % 2 === 1 && (s < 3 || drop) && 0.6 > strongest) { strongest = 0.6; band = 1; }
+      if (k % 4 === 2 && strongest === 0) { strongest = 0.4; band = 2; }
+      if (strongest > 0) map.onset(t, strongest, band);
+    }
+    for (let f = Math.max(0, Math.floor(t0 * rate) + 1); f / rate <= t1; f++) {
+      const t = f / rate, bar = Math.floor(t / SONG_BAR), s = section(bar), sinceBeat = t % SONG_T;
+      levels.fill(40 + 30 * s * (s === 3 && !drop ? 0 : 1));
+      levels[2 + 3 * (bar % 4)] += 70;
+      if (sinceBeat < 0.1) levels[Math.floor(t / SONG_T) % 2 === 0 ? 0 : 9] += 50;
+      map.skylineFrame(t, levels);
+    }
+  };
+  return { heard, level };
+}
+
+/** Record when each loop was scheduled, and what the map had drawn of it by then. */
+function watchLoops() {
+  const seen = new Map();
+  return {
+    seen,
+    each: (t, m) => {
+      for (const L of m.loops) {
+        if (seen.has(L)) continue;
+        seen.set(L, { at: t, committed: m.nodes.t0 + (m.committed - 1) / 30 });
+      }
+    },
+  };
+}
+
+test('a build predicts a loop on the next phrase line, drawn on the horizon first; the drop releases its power block', () => {
+  const map = new LiveMap({ mode: 'mono' });
+  const song = liveSong();
+  const w = watchLoops();
+  let drawnEarly = false;
+  drive(map, {
+    until: 62, grid: steady(128, 0, { from: 12 }), heard: song.heard, level: song.level,
+    each: (t, m) => {
+      w.each(t, m);
+      // Two seconds before the loop starts it is already on the provisional tail.
+      const L = m.loops.find((x) => x.predicted);
+      if (L && t > L.start - 2.05 && t < L.start - 1.95) {
+        const k = Math.round((L.time - m.nodes.t0) * 30);
+        drawnEarly = k >= m.committed && k < m.nodes.count && m.nodes.loop[k] === L.type;
+      }
+    },
+  });
+  const L = map.loops.find((x) => x.predicted);
+  assert.ok(L, `a predicted loop (${map.loops.map((x) => x.time.toFixed(2))})`);
+  assert.ok([LOOP.CORKSCREW, LOOP.DOUBLE].includes(L.type));
+  assert.ok(Math.abs(L.time - 24 * SONG_BAR) < 0.02, `on the drop's phrase line: ${L.time}`);
+  const when = w.seen.get(L);
+  assert.ok(L.time - when.at >= LIVE.loopLead - 1e-9, `scheduled ${L.time - when.at} s ahead`);
+  assert.ok(L.start > when.committed, 'past the committed track');
+  assert.ok(drawnEarly, 'foreshadowed on the tail');
+  // The committed loop is the file's shape: a full roll, a continuous path, an orthonormal frame.
+  const nd = map.nodes, end = Math.round((L.end - nd.t0) * 30) - 1;
+  assert.ok(Math.abs(nd.roll[end] - (L.type === LOOP.DOUBLE ? 4 : 2) * Math.PI) < 0.05);
+  for (let k = Math.round((L.start - nd.t0) * 30) - 5; k <= end + 5; k++) {
+    const step = Math.hypot(nd.pos[k * 3] - nd.pos[k * 3 - 3], nd.pos[k * 3 + 1] - nd.pos[k * 3 - 2], nd.pos[k * 3 + 2] - nd.pos[k * 3 - 1]);
+    assert.ok(step < 4, `step ${step} at ${k}`);
+    const dot = nd.up[k * 3] * nd.fwd[k * 3] + nd.up[k * 3 + 1] * nd.fwd[k * 3 + 1] + nd.up[k * 3 + 2] * nd.fwd[k * 3 + 2];
+    assert.ok(Math.abs(dot) < 1e-5 && Math.abs(Math.hypot(nd.up[k * 3], nd.up[k * 3 + 1], nd.up[k * 3 + 2]) - 1) < 1e-5);
+  }
+  // The drop came: its power block, one bar after it, is solid.
+  assert.ok(L.checked && L.dropOk && map.stats.drops === 1);
+  const b = map.blocks;
+  let pb = -1;
+  for (let i = 0; i < b.count; i++) if (b.type[i] === BLOCK.POWER && Math.abs(b.time[i] - 25 * SONG_BAR) < 0.02) pb = i;
+  assert.ok(pb >= 0, 'a power block on the first downbeat after the drop');
+  assert.equal(b.status[pb], STATUS.SOLID);
+  assert.equal(b.pbRank[pb], L.type === LOOP.DOUBLE ? 1 : 2);
+  // Blocks stay on the beats through the loop.
+  let inLoop = 0;
+  for (let i = 0; i < b.count; i++) {
+    if (b.time[i] < L.start || b.time[i] > L.end || b.status[i] !== STATUS.SOLID) continue;
+    inLoop++;
+    assert.ok(Math.abs(b.time[i] / (SONG_T / 2) - Math.round(b.time[i] / (SONG_T / 2))) * (SONG_T / 2) < 0.01);
+  }
+  assert.ok(inLoop >= 4, `${inLoop} blocks in the loop`);
+});
+
+test('a predicted drop that never comes: the loop still plays, its power block is withdrawn', () => {
+  const map = new LiveMap({ mode: 'mono' });
+  const song = liveSong({ drop: false });
+  drive(map, { until: 52, grid: steady(128, 0, { from: 12 }), heard: song.heard, level: song.level });
+  const L = map.loops.find((x) => x.predicted);
+  assert.ok(L && Math.abs(L.time - 24 * SONG_BAR) < 0.02, 'the loop was scheduled');
+  assert.ok(map.nodes.loop[Math.round((L.time - map.nodes.t0) * 30)] === L.type, 'and is in the track');
+  assert.ok(L.checked && !L.dropOk && map.stats.falseDrops === 1);
+  const b = map.blocks;
+  for (let i = 0; i < b.count; i++) {
+    if (b.type[i] !== BLOCK.POWER) continue;
+    assert.ok(Math.abs(b.time[i] - 25 * SONG_BAR) < 0.02, `only the held one: ${b.time[i]}`);
+    assert.equal(b.status[i], STATUS.GONE, 'withdrawn, never awarded');
+  }
+});
+
+test('no loops while the tracker, the bar lines or the phrases are unsure', () => {
+  const song = liveSong();
+  // The tracker is unsure: nothing at all.
+  const unsure = new LiveMap({ mode: 'mono' });
+  drive(unsure, { until: 60, grid: steady(128, 0, { confidence: 0.4 }), heard: song.heard, level: song.level });
+  assert.equal(unsure.loops.length, 0);
+  // Sure of the beat, but every beat is the same (no spectrum, no sections): no predicted loop,
+  // and the locked power block's plain loop falls on the tracker's own bar line.
+  const flat = new LiveMap({ mode: 'mono' });
+  drive(flat, { until: 60, grid: steady(128), heard: drums(128, 0, { offbeats: false }), level: () => 0.6 });
+  assert.equal(flat.stats.predicted, 0);
+  assert.ok(flat.bars.downbeatConfidence < LIVE.downbeatConfidence);
+  assert.ok(flat.loops.length >= 1 && flat.loops.every((L) => L.type === LOOP.PLAIN && !L.predicted));
+});
+
+test('sixteen locked bars give a plain loop with the power block, on a phrase line; loops keep 12 s apart', () => {
+  const map = new LiveMap({ mode: 'mono' });
+  const song = liveSong();
+  const w = watchLoops();
+  drive(map, { until: 75, grid: steady(128, 0, { from: 3 }), heard: song.heard, level: song.level, each: w.each });
+  assert.ok(map.loops.length >= 2, `${map.loops.length} loops`);
+  for (let i = 1; i < map.loops.length; i++) assert.ok(map.loops[i].time - map.loops[i - 1].time >= LIVE.loopSpacing - 1e-9);
+  for (const L of map.loops) {
+    assert.ok(L.time - w.seen.get(L).at >= LIVE.loopLead - 1e-9, 'ahead of the horizon');
+    // Section lines are every 8 bars from 0 s.
+    const bars = L.time / SONG_BAR;
+    assert.ok(Math.abs(bars - Math.round(bars)) < 0.02 && Math.round(bars) % 8 === 0, `${L.time} on a phrase line`);
+  }
+  // The first power block came from the lock, before the build: its loop sits on the drop's line,
+  // and the build turned it into a corkscrew (the block stays earned).
+  const first = map.loops[0];
+  assert.ok(Math.abs(first.time - 24 * SONG_BAR) < 0.02 && first.type !== LOOP.PLAIN);
+  const b = map.blocks;
+  let pb = -1;
+  for (let i = 0; i < b.count; i++) if (b.type[i] === BLOCK.POWER && Math.abs(b.time[i] - first.time) < 0.02) pb = i;
+  assert.ok(pb >= 0 && b.status[pb] === STATUS.SOLID);
+});
+
+test('the live demo gets its loops on the song’s section lines', async () => {
+  const { LiveSession, LiveClock } = await import('../src/live/session.js');
+  const { generateDemoSong } = await import('../src/audio/demo.js');
+  const { SR, mono } = await import('./live-fixtures.js');
+  const demo = generateDemoSong({ sampleRate: SR });
+  const audio = mono(demo.channels);
+  const node = () => ({ gain: { value: 1 }, connect() {}, disconnect() {}, start() {} });
+  const ctx = { sampleRate: SR, currentTime: 0, destination: {}, createBuffer: () => ({ copyToChannel() {} }), createGain: node, createBufferSource: node };
+  const session = new LiveSession(ctx, null);
+  session.latency = 0.025;
+  const map = new LiveMap({ mode: 'mono', seed: 'live:demo', duration: demo.duration });
+  session.begin(map, new LiveClock({ songStart: 10, offset: 0, read: () => 0 }));
+  const w = watchLoops();
+  for (let i = 0; i + 512 <= audio.length; i += 512) {
+    session.feed(Math.round((10.025 + i / SR) * SR), audio.subarray(i, i + 512));
+    const now = (i + 512) / SR - 0.012;
+    if ((i / 512) % 2 === 0) { session.update(now); w.each(now, map); }
+  }
+  const lines = demo.truth.sections.map((s) => s.start);
+  assert.ok(map.loops.length >= 3, `${map.loops.length} loops`);
+  for (const L of map.loops) {
+    assert.ok(lines.some((x) => Math.abs(L.time - x) < 0.3), `loop at ${L.time} on a section line`);
+    assert.ok(L.time - w.seen.get(L).at >= LIVE.loopLead - 1e-9);
+  }
+  // The first drop was predicted from its build, and came.
+  const drop = map.loops.find((L) => Math.abs(L.time - demo.truth.drops[0]) < 0.1);
+  assert.ok(drop && drop.predicted && drop.type !== LOOP.PLAIN && drop.dropOk);
 });

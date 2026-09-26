@@ -23,12 +23,30 @@
 //            remembers the strength and band of what was heard at each bar
 //            position; a future slot takes the lane its band suggests (low
 //            centre, high outer, mid alternating), and weak beats turn grey
-//   power    after 16 bars of locked beats the next downbeat is a power
-//            block; drops cannot be predicted, so there are no loops
+//   bars     every heard beat span goes to a BarTracker (bars.js): the
+//            downbeat, 8/16-bar phrase lines and builds
+//   loops    the same shapes as a file's (a plain loop, a corkscrew, a
+//            double corkscrew), scheduled far enough ahead that they are
+//            drawn on the provisional tail and foreshadowed on the horizon
+//            like a file's, never while the tracker or the bar and phrase
+//            estimates are unsure, and at least 12 s apart:
+//              - a build (three bars of rising intensity and onset energy)
+//                predicts a drop on the next phrase line at least
+//                loopLead ahead: a corkscrew there, a double one for a
+//                big build. The loop plays whether or not the drop comes,
+//                but its power block, on the first downbeat after the
+//                drop, is held as a ghost until the drop is heard (a kick
+//                and a jump in the low bands) and withdrawn if it is not.
+//              - 16 bars of locked beats earn a power block, placed with a
+//                plain loop on the next phrase line (or bar line) ahead.
+//
+// Loops are committed geometry once the nodes under them are; the tail
+// draws them before that, so a loop is on the horizon seconds early.
 //
 // Pure: no DOM, no audio. Times are song seconds.
 
-import { NODE_RATE, LEAD_IN, BLOCK, MODES, LAYOUT } from '../audio/songmap.js';
+import { NODE_RATE, LEAD_IN, BLOCK, MODES, LAYOUT, LOOP, shapePose, makePose } from '../audio/songmap.js';
+import { BarTracker, BARS } from './bars.js';
 import { mulberry32, seedFromString } from '../audio/random.js';
 import { gradientAt } from '../game/palette.js';
 
@@ -41,12 +59,23 @@ export const LIVE = Object.freeze({
   minConfidence: 0.6,
   minHitRate: 0.5,
   pbBeats: 64, // 16 bars of locked beats earn a power block
+  pbWait: 16, // …placed on a phrase line; while the phrases are unsure it waits this many more beats before taking a bar line
   tailDistance: 720, // metres of provisional track past the horizon
   tailMaxSeconds: 30,
   signalEvery: 0.25, // seconds between reports of rebuilt nodes to the view
   memory: 32, // pattern memory slots: 16 beats × 2
   offbeatStrength: 0.35, // an off-beat slot needs this remembered strength (beats sit near 1)
   silentBeat: 0.02, // a beat slot that remembered less stays empty
+  loopLead: 3.9, // a loop's centre is at least this far ahead when scheduled (its start past the horizon)
+  loopReach: 20, // …and at most this far
+  loopSpacing: 12, // seconds between loop centres
+  loopStreak: 16, // locked beats in a row before any loop
+  downbeatConfidence: 0.15,
+  phraseConfidence: 0.3,
+  bigBuild: 1.8, // build score for a double corkscrew
+  dropKick: 0.5, // a drop brings a kick at least this strong…
+  dropKickJump: 1.3, // …that is this much stronger than the bar before, or
+  dropLift: 0.04, // …lifts the intensity this much above the bar before
 });
 
 /** Block status in map.blocks.status. */
@@ -57,6 +86,7 @@ const NODE_FIELDS = { intensity: 1, speed: 1, pitch: 1, yaw: 1, roll: 1, beat: 1
 const BLOCK_FIELDS = {
   time: Float64Array, lane: Int8Array, type: Uint8Array, strength: Float32Array, band: Uint8Array, spanEnd: Float64Array,
   pbRank: Uint8Array, filler: Uint8Array, snapped: Uint8Array, status: Uint8Array, alpha: Float32Array, beatPos: Float64Array,
+  held: Uint8Array, // a ghost no beat solidifies (a power block waiting for its drop)
 };
 
 function allocNodes(capacity) {
@@ -141,8 +171,8 @@ export class LiveMap {
     this.rgb = [0, 0, 0];
 
     // Integrators: the committed track and a scratch copy for the tail.
-    this.st = { p: 0, x: 0, y: 0, z: 0, dist: 0, beat: 0, speed: 0 };
-    this.tailSt = { p: 0, x: 0, y: 0, z: 0, dist: 0, beat: 0, speed: 0 };
+    this.st = { p: 0, x: 0, y: 0, z: 0, dist: 0, beat: 0, speed: 0, li: 0, side: 0 };
+    this.tailSt = { p: 0, x: 0, y: 0, z: 0, dist: 0, beat: 0, speed: 0, li: 0, side: 0 };
     this.committed = 0;
     this.tailFrom = 0; // committed count when the tail was last rebuilt
     this.changedFrom = Infinity; // lowest node rewritten since the view last synced
@@ -152,7 +182,19 @@ export class LiveMap {
     this.analysed = -Infinity;
     this.intensity = 0;
     this.gate = false;
-    this.stats = { confirmed: 0, missed: 0, ghosts: 0, withdrawn: 0, placed: 0, powerBlocks: 0 };
+    this.stats = { confirmed: 0, missed: 0, ghosts: 0, withdrawn: 0, placed: 0, powerBlocks: 0, loops: 0, predicted: 0, drops: 0, falseDrops: 0 };
+
+    // Bars, phrases and loops.
+    this.bars = new BarTracker();
+    this.spanBeat = 0; // next beat whose span goes to the bar tracker
+    this.spanSpec = new Float32Array(16);
+    this.streak = 0; // locked beats in a row (a power block does not reset it)
+    this.loops = []; // { type, time, start, end, beat, dir, predicted, checked, pbBeat, pbIndex }, by start
+    this.pbBeat = new Float64Array(4).fill(NaN); // beats that get a power block…
+    this.pbRank = new Uint8Array(4);
+    this.pbHeld = new Uint8Array(4);
+    this.pbLoop = [null, null, null, null];
+    this.pose = makePose();
 
     this._commit(LIVE.horizon - LEAD_IN, 0);
     this._tail(0);
@@ -217,6 +259,8 @@ export class LiveMap {
     if (this.grid.valid) {
       this._evaluate(analysed);
       this._remember(analysed);
+      this._spans(analysed);
+      this._schedulePower(now);
     }
     const before = this.committed;
     this._commit(now + LIVE.horizon, intensity);
@@ -279,6 +323,11 @@ export class LiveMap {
         this.evalBeat = Math.ceil(this.beatAt(this.analysed));
         this.memSlot = Math.ceil(this._slotAt(this.analysed));
       } else this.dropGhosts();
+      // New beats: bars and pending power blocks start over (scheduled loops still play).
+      this.bars.reset();
+      this.spanBeat = Math.ceil(this.beatAt(this.analysed));
+      this.pbBeat.fill(NaN);
+      this.pbLoop.fill(null);
       this.nextSlot = Math.ceil(this._slotAt(now + LIVE.horizon));
       return;
     }
@@ -313,9 +362,10 @@ export class LiveMap {
       if (this._onsetNear(bt, win) >= 0) {
         this.stats.confirmed++;
         const b = this.blocks;
-        for (let i = this.firstGhost; i < b.count; i++) if (b.status[i] === STATUS.GHOST) b.status[i] = STATUS.SOLID;
+        for (let i = this.firstGhost; i < b.count; i++) if (b.status[i] === STATUS.GHOST && !b.held[i]) b.status[i] = STATUS.SOLID;
       } else this.stats.missed++;
       this.locked = this.gate ? this.locked + 1 : 0;
+      this.streak = this.gate ? this.streak + 1 : 0;
       this.evalBeat++;
     }
   }
@@ -359,6 +409,20 @@ export class LiveMap {
   }
 
   _decide(m, ts) {
+    const spb = this._slotsPerBeat();
+    const q = m % spb === 0 ? this._powerAt(m / spb) : -1;
+    if (q >= 0) {
+      // A scheduled power block, in the centre lane (always within the density cap).
+      const L = this.pbLoop[q];
+      const held = this.pbHeld[q] && !(L && L.checked && L.dropOk);
+      this.pbBeat[q] = NaN;
+      this.pbLoop[q] = null;
+      if (L && L.checked && !L.dropOk) return; // its drop never came
+      const i = this._add(ts, 0, BLOCK.POWER, 1, 0, this.pbRank[q], this.beatAt(ts));
+      this.blocks.held[i] = held ? 1 : 0;
+      if (L) L.pbIndex = i;
+      return;
+    }
     const idx = ((m % LIVE.memory) + LIVE.memory) % LIVE.memory;
     const set = this.memSet[idx], s = this.memStrength[idx], band = this.memBand[idx];
     const onBeat = m % 2 === 0;
@@ -367,12 +431,7 @@ export class LiveMap {
       if (set && s < LIVE.silentBeat) return;
       strength = set ? s : 0.5;
       useBand = set ? band : 0;
-      const beat = Math.round(m / this._slotsPerBeat());
-      if (this.locked >= LIVE.pbBeats && ((beat % 4) + 4) % 4 === 0) {
-        type = BLOCK.POWER;
-        rank = 2;
-        this.locked = 0;
-      } else if (this._weak(strength)) type = BLOCK.GREY;
+      if (this._weak(strength)) type = BLOCK.GREY;
       this._noteStrength(strength);
     } else {
       if (this.mode === 'casual' || !set || s < LIVE.offbeatStrength) return;
@@ -387,8 +446,175 @@ export class LiveMap {
       if (this.bucket < 1) return;
       this.bucket -= 1;
     }
-    const lane = type === BLOCK.POWER ? 0 : this._lane(useBand, type, ts);
-    this._add(ts, lane, type, strength, useBand, rank, this.beatAt(ts));
+    this._add(ts, this._lane(useBand, type, ts), type, strength, useBand, rank, this.beatAt(ts));
+  }
+
+  /** Queue slot of a power block scheduled on beat n, or −1. */
+  _powerAt(n) {
+    for (let q = 0; q < this.pbBeat.length; q++) if (this.pbBeat[q] === n) return q;
+    return -1;
+  }
+
+  _queueFree() {
+    for (let q = 0; q < this.pbBeat.length; q++) if (Number.isNaN(this.pbBeat[q])) return true;
+    return false;
+  }
+
+  /** Schedule a power block on beat n (held: until its loop's drop is heard). */
+  _queuePower(n, rank, held, loop) {
+    for (let q = 0; q < this.pbBeat.length; q++) {
+      if (!Number.isNaN(this.pbBeat[q])) continue;
+      this.pbBeat[q] = n;
+      this.pbRank[q] = rank;
+      this.pbHeld[q] = held ? 1 : 0;
+      this.pbLoop[q] = loop;
+      return true;
+    }
+    return false;
+  }
+
+  // --- bars, phrases and loops ----------------------------------------------------
+
+  /** Beat spans heard in full go to the bar tracker; completed bars may schedule a loop. */
+  _spans(analysed) {
+    const sky = this.skyline, win = LIVE.confirm, spec = this.spanSpec;
+    for (;;) {
+      const n = this.spanBeat, t0 = this.timeAtBeat(n), t1 = this.timeAtBeat(n + 1);
+      if (t1 + 0.03 > analysed) break;
+      this.spanBeat++;
+      const f0 = Math.max(0, Math.round(t0 * sky.rate)), f1 = Math.round(t1 * sky.rate);
+      let hasSpec = false;
+      if (f1 > f0 && f1 <= sky.frames) {
+        spec.fill(0);
+        for (let f = f0; f < f1; f++) for (let d = 0; d < 16; d++) spec[d] += sky.data[f * 16 + d];
+        for (let d = 0; d < 16; d++) spec[d] /= f1 - f0;
+        hasSpec = true;
+      }
+      let accent = 0, kick = 0, energy = 0;
+      for (let j = Math.max(0, this.onsetCount - 64); j < this.onsetCount; j++) {
+        const i = j % 64, ot = this.onsetTime[i], os = this.onsetStrength[i];
+        if (Math.abs(ot - t0) <= win) {
+          if (os > accent) accent = os;
+          if (this.onsetBand[i] === 0 && os > kick) kick = os;
+        }
+        if (ot >= t0 - win && ot < t1 - win) energy += os;
+      }
+      const bar = this.bars.push(n, hasSpec ? spec : null, accent, kick, energy, this.intensity);
+      this._checkDrops(n);
+      if (bar && this.bars.buildScore > 0) this._scheduleBuild(this.bars.buildScore);
+    }
+  }
+
+  /** Whether the bar tracker is sure of the bar lines (and, with phrases, the phrase lines). */
+  _barsSure(phrases) {
+    const B = this.bars;
+    if (B.downbeatConfidence < LIVE.downbeatConfidence) return false;
+    return !phrases || (B.phraseLines > 0 && B.phraseConfidence >= LIVE.phraseConfidence);
+  }
+
+  /** Whether a loop centred at t keeps its distance from every other. */
+  _loopFits(t) {
+    const L = this.loops;
+    for (let i = L.length - 1; i >= 0; i--) if (Math.abs(L[i].time - t) < LIVE.loopSpacing) return false;
+    return true;
+  }
+
+  _addLoop(type, beat, predicted) {
+    const t = this.timeAtBeat(beat), half = LAYOUT.loopLength / 2;
+    const L = { type, time: t, start: t - half, end: t + half, beat, dir: 1, predicted, checked: false, dropOk: false, pbIndex: -1 };
+    let i = this.loops.length;
+    while (i > 0 && this.loops[i - 1].start > L.start) i--;
+    this.loops.splice(i, 0, L);
+    this.stats.loops++;
+    return L;
+  }
+
+  /**
+   * A build just ended a bar: the drop is predicted on the next phrase line
+   * at least loopLead ahead. Only when every estimate is sure.
+   */
+  _scheduleBuild(score) {
+    if (!this.gate || this.streak < LIVE.loopStreak || !this._barsSure(true)) return;
+    const B = this.bars, now = this.now;
+    // One build, one drop: a rise that began before the last predicted drop was that drop's.
+    const from = this.timeAtBeat(B.downbeat + 4 * (B.lastBar - BARS.buildBars));
+    for (let i = this.loops.length - 1; i >= 0; i--) if (this.loops[i].predicted && this.loops[i].time > from) return;
+    const beat = B.nextPhraseStart(Math.ceil(this.beatAt(now + LIVE.loopLead)));
+    const t = this.timeAtBeat(beat), type = score >= LIVE.bigBuild ? LOOP.DOUBLE : LOOP.CORKSCREW;
+    if (t - now > LIVE.loopReach) return;
+    if (!this._loopFits(t)) {
+      // A power block's plain loop already waits on that line and is not
+      // committed yet: the build makes it a corkscrew (its block stays earned).
+      const L = this._loopOn(beat);
+      if (L && !L.predicted && L.start > now + LIVE.horizon + 0.5) {
+        L.type = type;
+        L.predicted = true;
+        this.stats.predicted++;
+        if (type === LOOP.DOUBLE) { const q = this._powerAt(beat); if (q >= 0) this.pbRank[q] = 1; }
+      }
+      return;
+    }
+    const L = this._addLoop(type, beat, true);
+    this.stats.predicted++;
+    this._queuePower(B.nextBarStart(beat + 1), type === LOOP.DOUBLE ? 1 : 2, true, L);
+  }
+
+  /** The scheduled loop centred on beat n, if any. */
+  _loopOn(n) {
+    for (let i = this.loops.length - 1; i >= 0; i--) if (this.loops[i].beat === n) return this.loops[i];
+    return null;
+  }
+
+  /**
+   * 16 locked bars earn a power block with a plain loop: on the next
+   * phrase line ahead if the phrases are known, else (after waiting up to
+   * pbWait more beats for them) the next bar line, the tracker's own if
+   * the bar lines are not known either.
+   */
+  _schedulePower(now) {
+    for (let q = 0; q < this.pbBeat.length; q++) {
+      if (!Number.isNaN(this.pbBeat[q]) && this.timeAtBeat(this.pbBeat[q]) < now) { this.pbBeat[q] = NaN; this.pbLoop[q] = null; }
+    }
+    if (this.locked < LIVE.pbBeats || !this.gate) return;
+    if (this.locked < LIVE.pbBeats + LIVE.pbWait && !this._barsSure(true)) return;
+    const B = this.bars, first = Math.ceil(this.beatAt(now + LIVE.loopLead));
+    let beat = NaN;
+    if (this._barsSure(true)) {
+      const b = B.nextPhraseStart(first);
+      if (this.timeAtBeat(b) - now <= LIVE.loopReach && this._loopFits(this.timeAtBeat(b))) beat = b;
+    }
+    if (Number.isNaN(beat)) {
+      for (let b = this._barsSure(false) ? B.nextBarStart(first) : first + (((-first % 4) + 4) % 4); this.timeAtBeat(b) - now <= LIVE.loopReach; b += 4) {
+        if (this._loopFits(this.timeAtBeat(b))) { beat = b; break; }
+      }
+    }
+    if (Number.isNaN(beat) || this._powerAt(beat) >= 0 || !this._queueFree()) return;
+    this._addLoop(LOOP.PLAIN, beat, false);
+    this._queuePower(beat, 2, false, null);
+    this.locked = 0;
+  }
+
+  /**
+   * Beat n was just heard: was it a predicted drop? A drop brings a strong
+   * kick, and either the kick is back (well above the bar before) or the
+   * intensity lifts. Its power block is released, or never placed.
+   */
+  _checkDrops(n) {
+    const Ls = this.loops;
+    for (let k = Ls.length - 1; k >= 0; k--) {
+      const L = Ls[k];
+      if (L.beat < n - 8) break;
+      if (!L.predicted || L.checked || L.beat !== n) continue;
+      const B = this.bars;
+      let kick = 0, level = 0;
+      for (let m = n - 4; m < n; m++) { kick += B.kickAt(m) / 4; level += (B.levelAt(m) || 0) / 4; }
+      const hit = B.kickAt(n);
+      L.checked = true;
+      L.dropOk = hit >= LIVE.dropKick && (hit >= LIVE.dropKickJump * kick || B.levelAt(n) >= level + LIVE.dropLift);
+      if (L.dropOk) this.stats.drops++;
+      else this.stats.falseDrops++;
+      if (L.dropOk && L.pbIndex >= 0) this.blocks.held[L.pbIndex] = 0;
+    }
   }
 
   /** Whether strength s is among the weakest greyFraction of recent beats. */
@@ -442,9 +668,10 @@ export class LiveMap {
     const i = b.count++;
     b.time[i] = t; b.lane[i] = lane; b.type[i] = type; b.strength[i] = strength; b.band[i] = band;
     b.spanEnd[i] = t; b.pbRank[i] = rank; b.filler[i] = 0; b.snapped[i] = 1;
-    b.status[i] = STATUS.GHOST; b.alpha[i] = 0; b.beatPos[i] = beatPos;
+    b.status[i] = STATUS.GHOST; b.alpha[i] = 0; b.beatPos[i] = beatPos; b.held[i] = 0;
     this.stats.placed++;
     if (type === BLOCK.POWER) this.stats.powerBlocks++;
+    return i;
   }
 
   _withdraw(i) {
@@ -504,6 +731,7 @@ export class LiveMap {
   _tail(I) {
     const nd = this.nodes, ts = this.tailSt, st = this.st;
     ts.p = st.p; ts.x = st.x; ts.y = st.y; ts.z = st.z; ts.dist = st.dist; ts.beat = st.beat; ts.speed = st.speed;
+    ts.li = st.li; ts.side = st.side;
     const d0 = st.dist, maxN = Math.round(LIVE.tailMaxSeconds * NODE_RATE);
     let k = this.committed;
     for (let j = 0; j < maxN && ts.dist - d0 < LIVE.tailDistance; j++, k++) {
@@ -518,7 +746,10 @@ export class LiveMap {
   /**
    * Write node k at intensity I, advancing integrator `st`: speed and
    * pitch as offline (pitch rate-limited to 12°/s), heading from seeded
-   * slow noise calmer where blocks are dense, beat position from the grid.
+   * slow noise calmer where blocks are dense, beat position from the grid,
+   * and any scheduled loop's shape (shapePose, as a file's). The frame is
+   * analytic: forward from the base heading plus the loop's own motion,
+   * up rolled by the loop.
    */
   _node(k, I, st) {
     const nd = this.nodes, cfg = this.cfg, dt = 1 / NODE_RATE;
@@ -531,25 +762,51 @@ export class LiveMap {
     let noise = 0;
     for (let w = 0; w < 3; w++) noise += this.waves[w][1] * Math.sin(2 * Math.PI * this.waves[w][0] * t + this.waves[w][2]);
     const yaw = LAYOUT.yawAmplitude * noise * (1 - 0.6 * this._density(t)) * DEG;
-    const pitch = st.p * DEG;
-    const cp = Math.cos(pitch), sp = Math.sin(pitch), cy = Math.cos(yaw), sy = Math.sin(yaw);
+    // Loops: plain ones leave the track shifted sideways for good.
+    const loops = this.loops, pose = this.pose;
+    while (st.li < loops.length && t > loops[st.li].end) {
+      if (loops[st.li].type === LOOP.PLAIN) st.side += LAYOUT.loopSideShift;
+      st.li++;
+    }
+    const L = loops[st.li];
+    if (L && t >= L.start) shapePose(L, t, pose);
+    else { pose.pitch = 0; pose.roll = 0; pose.rollRate = 0; pose.side = 0; pose.sideRate = 0; pose.radius = 0; pose.mark = 0; }
+    const pitch = st.p * DEG, pr = pitch + pose.pitch;
+    const cp = Math.cos(pr), sp = Math.sin(pr), cy = Math.cos(yaw), sy = Math.sin(yaw);
     const fx = sy * cp, fy = sp, fz = -cy * cp;
+    const ux = -sy * sp, uy = cp, uz = cy * sp;
+    const rx = fy * uz - fz * uy, ry = fz * ux - fx * uz, rz = fx * uy - fy * ux;
     if (k > 0) {
       const ds = 0.5 * (st.speed + speed) * dt;
       st.x += fx * ds; st.y += fy * ds; st.z += fz * ds;
       st.dist += ds;
     }
     st.speed = speed;
-    nd.pos[k * 3] = st.x; nd.pos[k * 3 + 1] = st.y; nd.pos[k * 3 + 2] = st.z;
+    const rho = pose.roll, R = pose.radius, cr = Math.cos(rho), sr = Math.sin(rho), side = st.side + pose.side;
+    const a = R * (1 - cr), c = -R * sr;
+    nd.pos[k * 3] = st.x + a * ux + c * rx + side * cy;
+    nd.pos[k * 3 + 1] = st.y + a * uy + c * ry;
+    nd.pos[k * 3 + 2] = st.z + a * uz + c * rz + side * sy;
     nd.dist[k] = st.dist;
-    nd.fwd[k * 3] = fx; nd.fwd[k * 3 + 1] = fy; nd.fwd[k * 3 + 2] = fz;
-    nd.up[k * 3] = -sy * sp; nd.up[k * 3 + 1] = cp; nd.up[k * 3 + 2] = cy * sp;
+    // Velocity: along the base heading, plus the roll about its axis and the sideways shift.
+    const w = R * pose.rollRate;
+    let vx = fx * speed + w * (sr * ux - cr * rx) + pose.sideRate * cy;
+    let vy = fy * speed + w * (sr * uy - cr * ry);
+    let vz = fz * speed + w * (sr * uz - cr * rz) + pose.sideRate * sy;
+    const vl = Math.hypot(vx, vy, vz) || 1;
+    vx /= vl; vy /= vl; vz /= vl;
+    let px = cr * ux + sr * rx, py = cr * uy + sr * ry, pz = cr * uz + sr * rz;
+    const d = px * vx + py * vy + pz * vz;
+    px -= d * vx; py -= d * vy; pz -= d * vz;
+    const pl = Math.hypot(px, py, pz) || 1;
+    nd.fwd[k * 3] = vx; nd.fwd[k * 3 + 1] = vy; nd.fwd[k * 3 + 2] = vz;
+    nd.up[k * 3] = px / pl; nd.up[k * 3 + 1] = py / pl; nd.up[k * 3 + 2] = pz / pl;
     nd.intensity[k] = I;
     nd.speed[k] = speed;
     nd.pitch[k] = pitch;
     nd.yaw[k] = yaw;
-    nd.roll[k] = 0;
-    nd.loop[k] = 0;
+    nd.roll[k] = rho;
+    nd.loop[k] = pose.mark;
     // Chevron phase: the block grid where it exists, 120 BPM before.
     st.beat = this.grid.valid ? this.beatAt(t) : t / 0.5;
     nd.beat[k] = st.beat;
