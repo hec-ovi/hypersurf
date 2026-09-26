@@ -2,10 +2,8 @@
 //   sky      a dome that follows the camera: black to a violet horizon
 //            band, with a starfield drifting by ∫ I dt
 //   skyline  1,152 pillars (384 on the low tier) whose heights follow the
-//            song's 16-band spectrum, laid out along the track: a slot
-//            every 12th node, 9 pillars per slot in three depth bands, in
-//            a ring of slots written only when a slot comes into range or
-//            the floating origin moves
+//            song's 16-band spectrum, laid out along the track and kept
+//            out of the view corridor by skyline.js
 //   rings    hoops around the track at its most intense nodes (top 18%),
 //            flashing on the beat
 //   debris   4k air particles (1k on the low tier) in a wrap-around volume
@@ -14,8 +12,9 @@
 //            glow with their band's level (one instanced mesh of segments)
 //
 // A live map grows and rewrites its provisional tail: invalidate() tells
-// the world which nodes moved, the wires' path is recomputed from there,
-// and pillar slots whose node moved are rewritten a few per frame.
+// the world which nodes moved and the wires' path is recomputed from
+// there; the skyline re-checks its pillars against the track a few slots
+// per frame.
 
 import * as THREE from 'three/webgpu';
 import { uniform, uniformArray } from 'three/tsl';
@@ -24,12 +23,7 @@ import { gradientAt } from './palette.js';
 import { mulberry32 } from '../audio/random.js';
 import { ringNodes } from './trackpath.js';
 import { markRange } from './buffers.js';
-
-const NODES_PER_SLOT = 12;
-const PER_SLOT = 9;
-const RING = 128;
-const DEPTHS = [[60, 150], [150, 400], [400, 900]];
-const CLEARANCE = 30; // metres a pillar keeps from the track
+import { Skyline, RING, PER_SLOT } from './skyline.js';
 
 const RING_CAP = 64;
 const RING_INNER = 10.5;
@@ -44,9 +38,6 @@ const WIRE_STEP = 8; // nodes per segment, aligned to the node grid so wires do 
 const WIRE_SEGS = 104; // per wire: covers the draw distance at the slowest speed
 const WIRE_FAR = 640;
 const WIRE_SMOOTH = 45; // nodes either side averaged into the wires' path
-
-const SLOT_REWRITES = 6; // live: pillar slots rewritten per frame at most
-const SLOT_MOVE = 2; // metres a slot's node may move before its pillars follow
 
 const DEBRIS_MAX = 4096;
 const DEBRIS_VOLUME = 110; // metres per side of the wrap-around cube
@@ -82,9 +73,7 @@ export class World {
     this.pillars = new THREE.Mesh(g, pillarMaterial(uniforms, lut));
     this.pillars.frustumCulled = false;
     scene.add(this.pillars);
-    this.slotOf = new Int32Array(RING).fill(-1);
-    this.slotAt = new Float64Array(RING * 3); // node position each slot was written for
-    this.staleFrom = Infinity; // live: first slot whose node may have moved
+    this.skyline = new Skyline(this.aPos.array, this.aSize.array);
     this.levels = new Float32Array(16);
 
     // --- rings ---
@@ -137,9 +126,7 @@ export class World {
   load(map) {
     this.map = map;
     this.live = !!map.live;
-    this.slotOf.fill(-1);
-    this.staleFrom = Infinity;
-    this.aSize.array.fill(0);
+    this.skyline.load(map.nodes, this.live);
     this.aSize.needsUpdate = true;
     this.levels.fill(0);
     this.ringNodes = this.live ? map.rings.list : ringNodes(map.nodes);
@@ -156,8 +143,6 @@ export class World {
   invalidate(node) {
     if (!this.live) return;
     this._skyLive(node);
-    const j = Math.floor(node / NODES_PER_SLOT);
-    if (j < this.staleFrom) this.staleFrom = j;
   }
 
   /**
@@ -251,7 +236,7 @@ export class World {
   /**
    * @param nodeIndex ship's node index; t song time; tAhead song time at the
    *                  draw distance; dt frame seconds
-   * @param rebased   the floating origin moved: rewrite every slot
+   * @param rebased   the floating origin moved: re-translate the pillars
    */
   update(nodeIndex, t, tAhead, dt, origin, rebased, camera) {
     this.sky.position.copy(camera.position);
@@ -270,33 +255,10 @@ export class World {
     this._levels(t, dt);
     this._rings(t, tAhead, origin);
     this._wires(nodeIndex, tAhead, origin);
-    const nodes = map.nodes;
-    const slots = Math.floor((nodes.count - 1) / NODES_PER_SLOT);
-    const j0 = Math.max(0, Math.floor(nodeIndex / NODES_PER_SLOT) - 2);
-    const j1 = Math.min(slots, j0 + RING - 1);
-    let wrote = false, rewrites = 0;
-    for (let j = j0; j <= j1; j++) {
-      const r = j % RING;
-      if (this.slotOf[r] === j && !rebased) {
-        // Live: a slot over a rewritten node follows it once it moved enough.
-        if (j < this.staleFrom || rewrites >= SLOT_REWRITES || !this._slotMoved(j, r)) continue;
-        rewrites++;
-      }
-      this._writeSlot(j, r, origin);
-      this.slotOf[r] = j;
-      wrote = true;
-    }
-    if (rewrites < SLOT_REWRITES) this.staleFrom = Infinity;
-    if (wrote) {
+    if (this.skyline.update(nodeIndex, origin, rebased)) {
       this.aPos.needsUpdate = true;
       this.aSize.needsUpdate = true;
     }
-  }
-
-  _slotMoved(j, r) {
-    const nd = this.map.nodes, k = j * NODES_PER_SLOT, a = this.slotAt;
-    const dx = nd.pos[k * 3] - a[r * 3], dy = nd.pos[k * 3 + 1] - a[r * 3 + 1], dz = nd.pos[k * 3 + 2] - a[r * 3 + 2];
-    return dx * dx + dy * dy + dz * dz > SLOT_MOVE * SLOT_MOVE;
   }
 
   /** Band levels at song time t, gated and smoothed (fast attack, slower release). */
@@ -386,55 +348,6 @@ export class World {
     this.wires.geometry.instanceCount = i;
     markRange(this.wireA, i);
     markRange(this.wireB, i);
-  }
-
-  _writeSlot(j, r, origin) {
-    const nd = this.map.nodes, k = j * NODES_PER_SLOT;
-    const P = this.aPos.array, S = this.aSize.array;
-    this._rs = (0x5eed + j * 7919) >>> 0;
-    const px = nd.pos[k * 3], py = nd.pos[k * 3 + 1], pz = nd.pos[k * 3 + 2];
-    this.slotAt[r * 3] = px; this.slotAt[r * 3 + 1] = py; this.slotAt[r * 3 + 2] = pz;
-    // Horizontal right and forward of the node.
-    const fx = nd.fwd[k * 3], fz = nd.fwd[k * 3 + 2];
-    const fl = Math.hypot(fx, fz) || 1;
-    const hx = fx / fl, hz = fz / fl, rx = -hz, rz = hx;
-    for (let q = 0; q < PER_SLOT; q++) {
-      // Instances are ordered depth-band-major (q · RING + r), so a tier that
-      // draws only the first RING · 3 still has pillars in every band.
-      const i = q * RING + r;
-      const near = DEPTHS[q % 3][0], far = DEPTHS[q % 3][1];
-      const side = (q + j) % 2 === 0 ? 1 : -1;
-      const out = near + (far - near) * this._rand();
-      const along = (this._rand() - 0.5) * 40;
-      const x = px + rx * side * out + hx * along, z = pz + rz * side * out + hz * along;
-      const width = 3 + this._rand() * (q % 3 === 0 ? 4 : 11);
-      const height = (q % 3 === 0 ? 10 : 26) + this._rand() * (q % 3 === 0 ? 30 : 100);
-      const below = 260 + this._rand() * 60;
-      const y = py - 18 - this._rand() * 30;
-      const band = (j * 7 + q * 5) % 16;
-      const clear = this._clearOfTrack(x, z, k, width);
-      P[i * 4] = x - origin.x; P[i * 4 + 1] = y - origin.y; P[i * 4 + 2] = z - origin.z; P[i * 4 + 3] = band;
-      S[i * 4] = clear ? width : 0; S[i * 4 + 1] = clear ? height : 0; S[i * 4 + 2] = clear ? below : 0; S[i * 4 + 3] = this._rand();
-    }
-  }
-
-  /** mulberry32 on instance state: the slot writer's PRNG without a closure per slot. */
-  _rand() {
-    let t = (this._rs = (this._rs + 0x6d2b79f5) >>> 0);
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  }
-
-  /** Whether (x, z) keeps its distance from the track around node k (winding tracks come back). */
-  _clearOfTrack(x, z, k, width) {
-    const nd = this.map.nodes, n = nd.count;
-    const lim = CLEARANCE + width;
-    for (let m = Math.max(0, k - 900); m < Math.min(n, k + 900); m += 6) {
-      const dx = nd.pos[m * 3] - x, dz = nd.pos[m * 3 + 2] - z;
-      if (dx * dx + dz * dz < lim * lim) return false;
-    }
-    return true;
   }
 }
 
