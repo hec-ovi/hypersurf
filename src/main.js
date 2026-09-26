@@ -607,6 +607,8 @@ function fillPause() {
 
 function resume() {
   if (app.state !== 'paused') return;
+  if (app.view && app.view.lost) { viewLostNote(); return; } // never play on while nothing is drawn
+  if (app.lostNote) { app.lostNote(); app.lostNote = null; }
   if (app.live && app.live.yt) {
     app.live.wantPlay = true;
     app.live.yt.play();
@@ -985,6 +987,11 @@ function frame() {
   const dt = Math.min(0.1, Math.max(0, (t0 - app.lastFrame) / 1000));
   const frameMs = t0 - app.lastFrame;
   app.lastFrame = t0;
+  if (app.view && app.view.lost) {
+    // Nothing can be drawn: never keep playing (and scoring) blind.
+    if (app.state === 'play') pause();
+    return;
+  }
   if (STAGES[app.state]) {
     // The selection stage borrows the renderer while its screen is open.
     const st = STAGES[app.state];
@@ -1273,11 +1280,90 @@ function debugOverlay(now) {
   ].join('\n');
 }
 
+// --- lost 3D view -----------------------------------------------------------------
+
+/** Seconds to wait for the browser to give the context back before offering a reload. */
+const RESTORE_WAIT = 5000;
+
+/** Try `build` a few times: a browser that just lost a context may refuse a new one for a moment. */
+async function withRetry(build, tries = 4) {
+  for (let i = 0; ; i++) {
+    try {
+      return await build();
+    } catch (err) {
+      if (i >= tries - 1) throw err;
+      console.warn('3D view not ready, trying again', err);
+      await new Promise((resolve) => setTimeout(resolve, 600 * 2 ** i));
+    }
+  }
+}
+
+/** WebGL2 or WebGPU exist here at all (a failure is then the browser refusing for now, not a missing feature). */
+const has3d = () => typeof WebGL2RenderingContext !== 'undefined' || !!navigator.gpu;
+
+function offerReload(title, body) {
+  if (app.lostNote) app.lostNote();
+  app.lostNote = note('error', title, body, { action: { label: 'Reload', run: () => location.reload() } });
+}
+
+function viewLostNote() {
+  if (app.lostNote) app.lostNote();
+  app.lostNote = note('warn', '3D view lost', 'The 3D view was lost by the browser — restoring…', { focus: false });
+}
+
+/** The context is gone: pause at once (the song too) and say so. */
+function onViewLost() {
+  stats.contextLosses = (stats.contextLosses || 0) + 1;
+  if (app.state === 'play') pause();
+  app.redraw = 2;
+  viewLostNote();
+  clearTimeout(app.restoreTimer);
+  app.restoreTimer = setTimeout(() => {
+    if (app.view.lost) offerReload('3D view not restored', 'The browser has not given the 3D view back. Reload the page to carry on.');
+  }, RESTORE_WAIT);
+}
+
+/** The context can be had again: rebuild the view, compile again and offer RESUME. */
+async function onViewRestorable() {
+  const view = app.view;
+  if (app.restoring) return;
+  app.restoring = true;
+  try {
+    await withRetry(() => view.rebuild());
+    view.calm = app.settings.calm;
+    view.gfx.renderer.setAnimationLoop(frame);
+    stats.backend = view.backend;
+    stats.quality = view.gfx.qualityName;
+    for (const st of Object.values(STAGES)) st.reset();
+    if (STAGES[app.state]) STAGES[app.state].show(app.settings[app.state], view.gfx);
+    if (view.map && app.rules) {
+      view.reset(app.viewT);
+      await view.compile(app.rules.state);
+    }
+  } catch (err) {
+    console.warn('3D view not restored', err);
+    stats.errors.push(`restore: ${err && err.message ? err.message : err}`);
+    offerReload('3D view not restored', 'The 3D view could not be rebuilt. Reload the page to carry on.');
+    return;
+  } finally {
+    app.restoring = false;
+  }
+  clearTimeout(app.restoreTimer);
+  if (app.lostNote) app.lostNote();
+  app.lostNote = null;
+  app.redraw = 2;
+  app.lastFrame = performance.now();
+  view.gfx.resetTiming(app.lastFrame);
+  // Kept in lostNote so RESUME clears it (toasts stay out of play).
+  if (app.state === 'paused') app.lostNote = note('info', '3D view restored', 'Resume when you are ready.', { action: { label: 'Resume', run: resume }, focus: true });
+  else note('info', '3D view restored', 'Everything is drawn again.');
+}
+
 // --- wiring -----------------------------------------------------------------------
 
 function ready() {
   return app.viewReady.then((ok) => {
-    if (!ok) throw userError('This browser cannot run the 3D view (it needs WebGPU or WebGL2).', 'No 3D view');
+    if (!ok) throw userError(has3d() ? 'The browser is not giving this page a 3D view right now. Reload to try again.' : 'This browser cannot run the 3D view (it needs WebGPU or WebGL2).', 'No 3D view');
   });
 }
 
@@ -1707,7 +1793,10 @@ async function boot() {
   setState('menu');
   if (LIVE_DEMO) note('info', 'Live path test', '?live=demo: the demo plays through the live listening path, as a YouTube video would.');
   app.view = new GameView($('view'), { forceWebGL: params.get('webgl') === '1', quality: app.settings.quality, vehicle: app.settings.vehicle });
-  app.viewReady = app.view.init().then(() => {
+  app.view.onLost = onViewLost;
+  app.view.onRestorable = onViewRestorable;
+  // Right after a lost context (a reload, say) the browser may refuse a new one for a moment: try again.
+  app.viewReady = withRetry(() => app.view.init()).then(() => {
     stats.backend = app.view.backend;
     stats.quality = app.view.gfx.qualityName;
     app.view.calm = app.settings.calm;
@@ -1717,7 +1806,8 @@ async function boot() {
   }, (err) => {
     console.warn('renderer unavailable', err);
     stats.errors.push(`renderer: ${err && err.message ? err.message : err}`);
-    note('error', 'No 3D view', 'This browser cannot run the 3D view (it needs WebGPU or WebGL2).', { focus: false });
+    if (has3d()) offerReload('No 3D view', 'The browser is not giving this page a 3D view right now. Reload to try again.');
+    else note('error', 'No 3D view', 'This browser cannot run the 3D view (it needs WebGPU or WebGL2).', { focus: false });
     return false;
   });
 }

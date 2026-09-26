@@ -131,6 +131,15 @@ export class SelectStage {
     this.open = false;
   }
 
+  /** Forget the 3D stage (its renderer was replaced after a lost context); the next show() builds it again. */
+  reset() {
+    this.pipeline = null;
+    this.scene = null;
+    this.objects = [];
+    this.gfx = null;
+    this.swap = null;
+  }
+
   /** Switch by dir (−1 / +1), wrapping. */
   step(dir) {
     this.select(stepOption(this.index, dir, this.options.length), dir);

@@ -2,6 +2,12 @@
 // chase camera, all driven from song time. Positions are computed in
 // float64 and written relative to a floating origin that re-bases every
 // 500 m, so float32 stays precise kilometres down the track.
+//
+// A lost GPU context (webglcontextlost, or the WebGPU device's lost promise)
+// sets `lost` and calls onLost; once the context can be had again
+// (webglcontextrestored, or at once for WebGPU, which takes a new device)
+// it calls onRestorable, and rebuild() makes the renderer, the scene and
+// the post chain again through the same init path.
 
 import * as THREE from 'three/webgpu';
 import { Renderer } from './render.js';
@@ -22,6 +28,7 @@ const SHIP_HOVER = 0.55;
 export class GameView {
   constructor(canvas, options = {}) {
     this.canvas = canvas;
+    this.options = options;
     this.gfx = new Renderer(canvas, options);
     this.uniforms = createUniforms();
     this.origin = { x: 0, y: 0, z: 0 };
@@ -34,10 +41,27 @@ export class GameView {
     this.rebases = 0;
     this.vehicleId = vehicleId(options.vehicle);
     this.beatGrid = null;
+    this.lost = false;
+    this.onLost = null;
+    this.onRestorable = null;
+    canvas.addEventListener('webglcontextlost', (e) => {
+      e.preventDefault(); // without this the browser never restores the context
+      this._lose();
+    });
+    canvas.addEventListener('webglcontextrestored', () => this._restorable());
   }
 
+  /** Build the renderer and the scene. Safe to call again after a failure: every call starts a fresh renderer. */
   async init() {
-    await this.gfx.init();
+    const gfx = new Renderer(this.canvas, this.options);
+    this.gfx = gfx;
+    // WebGL losses arrive as canvas events (above); a WebGPU device never comes back, so take a new one at once.
+    gfx.onLost = (info) => {
+      if (info.api !== 'WebGPU' || gfx !== this.gfx) return;
+      this._lose();
+      this._restorable();
+    };
+    await gfx.init();
     const scene = new THREE.Scene();
     const bg = hexToLinear(PALETTE.background);
     scene.background = new THREE.Color().setRGB(bg[0], bg[1], bg[2], THREE.LinearSRGBColorSpace);
@@ -55,6 +79,33 @@ export class GameView {
     this.gfx.setScene(scene, camera);
     this.gfx.resize();
     return this;
+  }
+
+  _lose() {
+    if (this.lost) return;
+    this.lost = true;
+    if (this.onLost) this.onLost();
+  }
+
+  _restorable() {
+    if (this.lost && this.onRestorable) this.onRestorable();
+  }
+
+  /**
+   * After a lost context: a new renderer, scene, materials, buffers and post
+   * chain, with the current map loaded again. The caller resets the view to
+   * its song time and compiles again (compile()).
+   */
+  async rebuild() {
+    const old = this.gfx, map = this.map;
+    if (old) {
+      try { old.abandon(); } catch { /* its context is gone */ }
+      this.options = { ...this.options, quality: old.qualityName };
+    }
+    this.compiled = false;
+    await this.init(); // throws with the map kept, so a retry loads it again
+    if (map) this.load(map);
+    this.lost = false;
   }
 
   _makeVehicle() {

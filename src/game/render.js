@@ -44,6 +44,7 @@ export class Renderer {
     this.quality = QUALITY[this.qualityName];
     this.renderer = null;
     this.pipeline = null;
+    this.onLost = null; // (info: { api, message }) on a lost context or device
     this.backend = 'none';
     this.governor = new ResolutionGovernor({ minScale: this.quality.minScale });
     this.width = 1;
@@ -68,6 +69,10 @@ export class Renderer {
     renderer.toneMapping = THREE.NeutralToneMapping;
     renderer.toneMappingExposure = 1;
     renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.onDeviceLost = (info) => {
+      renderer._onDeviceLost(info);
+      if (this.onLost) this.onLost(info);
+    };
     await renderer.init();
     this.renderer = renderer;
     this.backend = renderer.backend.isWebGPUBackend ? 'webgpu' : 'webgl2';
@@ -110,6 +115,21 @@ export class Renderer {
     this.pipeline = new THREE.RenderPipeline(this.renderer);
     this.pipeline.outputColorTransform = false;
     this.pipeline.outputNode = q.fxaa ? fxaa(display) : display;
+  }
+
+  /**
+   * Let go of a renderer whose context or device was lost. Its GPU objects
+   * died with the context. A WebGPU renderer is disposed; a WebGL one is
+   * only stopped, because three's WebGL dispose() calls loseContext() and
+   * would take the restored context down with it.
+   */
+  abandon() {
+    const r = this.renderer;
+    this.renderer = null;
+    this.pipeline = null;
+    if (!r) return;
+    r.setAnimationLoop(null);
+    if (this.backend === 'webgpu') r.dispose();
   }
 
   setQuality(name) {
