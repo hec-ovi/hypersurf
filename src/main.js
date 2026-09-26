@@ -13,7 +13,8 @@ import { createAutopilot } from './game/autopilot.js';
 import { makeSample } from './game/trackpath.js';
 import { Analyzer } from './audio/analyzer.js';
 import { SongPlayer, copyChannels, toAudioBuffer } from './audio/player.js';
-import { LEAD_IN, TAIL } from './audio/songmap.js';
+import { LEAD_IN, TAIL, makeGrid } from './audio/songmap.js';
+import { Sfx } from './audio/sfx.js';
 import { parseVideoId } from './live/youtube.js';
 
 const params = new URLSearchParams(location.search);
@@ -112,7 +113,7 @@ window.__hypersurf = {
 // --- settings -------------------------------------------------------------------
 
 function loadSettings() {
-  const defaults = { latency: 0, calm: false, quality: 'high', mode: 'mono' };
+  const defaults = { latency: 0, calm: false, quality: 'high', mode: 'mono', sfx: true };
   try {
     const raw = storage && storage.getItem(SETTINGS_KEY);
     const v = raw ? JSON.parse(raw) : {};
@@ -121,6 +122,7 @@ function loadSettings() {
       calm: typeof v.calm === 'boolean' ? v.calm : defaults.calm,
       quality: ['high', 'medium', 'low'].includes(v.quality) ? v.quality : defaults.quality,
       mode: RULES[v.mode] ? v.mode : defaults.mode,
+      sfx: typeof v.sfx === 'boolean' ? v.sfx : defaults.sfx,
     };
   } catch {
     return defaults;
@@ -185,6 +187,8 @@ function ensureAudio() {
     app.ctx = new Ctx({ latencyHint: 'interactive' });
     app.player = new SongPlayer(app.ctx);
     app.player.offset = app.settings.latency / 1000;
+    app.sfx = new Sfx(app.ctx, app.player.gain);
+    app.sfx.enabled = app.settings.sfx;
   }
   if (app.ctx.state === 'suspended') app.ctx.resume().catch(() => {});
 }
@@ -296,6 +300,10 @@ async function startSong(mode) {
   }
   app.map = map;
   app.mode = mode;
+  if (app.gridFor !== map) {
+    app.grid = makeGrid(map.beats, map.bpm, map.duration);
+    app.gridFor = map;
+  }
   const view = app.view;
   if (view.map !== map) {
     view.load(map);
@@ -327,6 +335,7 @@ async function beginRun() {
   if (!view.compiled) {
     setState('analyze');
     loading(null, 1, 'Preparing the track…');
+    app.sfx.prepare();
     await view.compile(app.rules.state);
   }
   app.rules.skipTo(start);
@@ -340,6 +349,7 @@ async function beginRun() {
   stats.runs++;
   ensureAudio();
   app.player.play(app.song.buffer, LEAD_IN, start + LEAD_IN);
+  app.sfx.setSong(app.grid, app.player.clock.songStart);
   app.lastFrame = performance.now();
   view.gfx.resetTiming(app.lastFrame);
   setState('play');
@@ -470,29 +480,35 @@ function tick(dt) {
 }
 
 function onEvent(ev) {
-  const { juice, view } = app;
+  const { juice, view, sfx } = app;
   const now = app.simT;
   switch (ev.type) {
     case EVENT.HIT:
       stats.hits++;
       juice.hit();
       juice.burst(0.25, now);
+      sfx.hit(ev.lane + 1, ev.count, ev.time);
       view.blocks.shatter(ev.block, view.path.sample(ev.time, app.hitSample), performance.now() / 1000);
       break;
     case EVENT.GREY:
     case EVENT.SPIKE:
       stats.hits++;
       juice.grey();
+      sfx.grey();
       view.blocks.shatter(ev.block, view.path.sample(ev.time, app.hitSample), performance.now() / 1000);
       break;
     case EVENT.POWER:
       stats.hits++;
       juice.power();
       juice.burst(0.6, now);
+      sfx.power(ev.time);
       view.blocks.shatter(ev.block, view.path.sample(ev.time, app.hitSample), performance.now() / 1000);
       break;
     case EVENT.COLLECT:
-      if (ev.value > 0) juice.cashIn(now, ev.count);
+      if (ev.value > 0) {
+        juice.cashIn(now, ev.count);
+        sfx.cashIn(ev.count, ev.time);
+      }
       break;
     case EVENT.MISS:
       stats.misses++;
@@ -687,6 +703,13 @@ function wireMenu() {
     app.settings.calm = calm.checked;
     app.juice.calm = calm.checked;
     if (app.view) app.view.calm = calm.checked;
+    saveSettings();
+  });
+  const sfxBox = $('sfx');
+  sfxBox.checked = app.settings.sfx;
+  sfxBox.addEventListener('change', () => {
+    app.settings.sfx = sfxBox.checked;
+    if (app.sfx) app.sfx.enabled = sfxBox.checked;
     saveSettings();
   });
   const quality = $('quality');
