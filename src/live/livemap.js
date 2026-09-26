@@ -45,7 +45,7 @@ export const LIVE = Object.freeze({
   tailMaxSeconds: 30,
   signalEvery: 0.25, // seconds between reports of rebuilt nodes to the view
   memory: 32, // pattern memory slots: 16 beats × 2
-  offbeatStrength: 0.5, // an off-beat slot needs this remembered strength
+  offbeatStrength: 0.35, // an off-beat slot needs this remembered strength (beats sit near 1)
   silentBeat: 0.02, // a beat slot that remembered less stays empty
 });
 
