@@ -964,7 +964,7 @@ function drawZone(zone) {
     svg.setAttribute('aria-hidden', 'true');
     svg.style.cssText = 'position:fixed;inset:0;width:100%;height:100%;z-index:45;pointer-events:none';
     svg.innerHTML = '<polygon fill="rgba(255,90,42,.08)" stroke="#ff5a2a" stroke-width="1" stroke-dasharray="4 4"/>';
-    svg.hidden = true;
+    svg.setAttribute('hidden', ''); // SVG elements have no .hidden property
     document.body.appendChild(svg);
   }
   svg.setAttribute('viewBox', `0 0 ${innerWidth} ${innerHeight}`);
@@ -1614,7 +1614,7 @@ function wireUi() {
       if (e.code === 'Escape') pause();
       else if (e.code === 'KeyR' && !e.repeat) { e.preventDefault(); restart(); }
       else if (e.code === 'KeyP' && DEBUG) window.__hypersurf.autopilot = !app.autopilot;
-      else if (e.code === 'KeyZ' && DEBUG) { placeHud(); $('zone').hidden = !$('zone').hidden; }
+      else if (e.code === 'KeyZ' && DEBUG) { placeHud(); $('zone').toggleAttribute('hidden'); }
       else if ((e.code === 'BracketLeft' || e.code === 'BracketRight') && app.live) setOctave(app.octave + (e.code === 'BracketLeft' ? -1 : 1));
       else if ((e.code === 'Minus' || e.code === 'Equal') && app.live) nudgeLatency(e.code === 'Minus' ? -1 : 1);
       else if (e.code === 'KeyV' && !e.repeat && app.live && app.live.yt) setVideoMode(app.settings.video === 'hidden' ? 'mini' : 'hidden');
