@@ -184,7 +184,7 @@ export function pillarMaterial(u) {
     const top = smoothstep(0.985, 1, g.y);
     const glow = top.mul(level.mul(2.5).add(0.6)).add(edge.mul(level.mul(0.8).add(0.08)));
     // A faint wash up the upper body so pillars read as buildings, not floating tops.
-    const body = smoothstep(0.55, 1, g.y).mul(0.05);
+    const body = smoothstep(0.6, 1, g.y).mul(0.022);
     return vec3(0.004, 0.005, 0.01).add(u.trackColor.mul(glow.add(body)));
   })();
   return m;
