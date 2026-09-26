@@ -82,9 +82,10 @@
         <button class="cb" type="button" id="file-btn" data-nav style="--i:1"><span class="lbl">Play audio file</span><span class="meta">MP3 · WAV · OGG · FLAC</span></button>
         <button class="cb" type="button" id="video-btn" data-nav style="--i:2"><span class="lbl">Play a YouTube video</span><span class="meta">Live listen</span></button>
         <button class="cb" type="button" id="mode-btn" data-nav data-step style="--i:3" aria-describedby="mode-now"><span class="lbl">Mode</span><span class="meta sel-inline"><span class="chev" data-icon="chevL"></span><b id="mode-now">Mono</b><span class="chev" data-icon="chevR"></span></span></button>
-        <button class="cb" type="button" id="settings-btn" data-nav style="--i:4"><span class="lbl">Settings</span></button>
+        <button class="cb" type="button" id="vehicle-btn" data-nav data-step style="--i:4" aria-describedby="vehicle-now"><span class="lbl">Vehicle</span><span class="meta sel-inline"><span class="chev" data-icon="chevL"></span><b id="vehicle-now">Dart</b><span class="chev" data-icon="chevR"></span></span></button>
+        <button class="cb" type="button" id="settings-btn" data-nav style="--i:5"><span class="lbl">Settings</span></button>
         <div class="quit-gap"></div>
-        <button class="cb" type="button" id="howto-btn" data-nav style="--i:5"><span class="lbl">How to play</span></button>
+        <button class="cb" type="button" id="howto-btn" data-nav style="--i:6"><span class="lbl">How to play</span></button>
       </div>
     </nav>
 
@@ -191,6 +192,33 @@
     <div class="stage-gauges" data-stage-gauges></div>
     <div class="stage-foot">
       <div class="stage-icons" role="radiogroup" aria-label="Modes" data-stage-icons></div>
+      <div class="actions">
+        <button class="act" type="button" data-back data-nav><span data-icon="chevL"></span>Back</button>
+        <button class="act" type="button" data-stage-confirm data-nav data-default>Confirm<span data-icon="chevR"></span></button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================ vehicle select (3D stage) -->
+  <section id="vehicle" class="screen stage-screen" hidden aria-labelledby="vehicle-title">
+    <header class="head stage-head">
+      <h2 class="title" id="vehicle-title" data-decode>Select vehicle</h2>
+      <p class="sub">Same ride · different look</p>
+    </header>
+    <div class="stage-area" data-stage-drag aria-hidden="true">
+      <span class="stage-fallback" data-stage-fallback></span>
+    </div>
+    <button class="stage-arrow prev" type="button" data-stage-prev aria-label="Previous vehicle" data-icon="chevL"></button>
+    <button class="stage-arrow next" type="button" data-stage-next aria-label="Next vehicle" data-icon="chevR"></button>
+    <div class="stage-info">
+      <p class="eyebrow cyan" data-stage-index>01 / 03</p>
+      <h3 class="stage-name" data-stage-name aria-live="polite">Dart</h3>
+      <p class="stage-desc" data-stage-desc></p>
+      <ul class="rows stage-rows" data-stage-rows></ul>
+    </div>
+    <div class="stage-gauges" data-stage-gauges></div>
+    <div class="stage-foot">
+      <div class="stage-icons" role="radiogroup" aria-label="Vehicles" data-stage-icons></div>
       <div class="actions">
         <button class="act" type="button" data-back data-nav><span data-icon="chevL"></span>Back</button>
         <button class="act" type="button" data-stage-confirm data-nav data-default>Confirm<span data-icon="chevR"></span></button>

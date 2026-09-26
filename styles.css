@@ -98,6 +98,7 @@ body[data-state="play"] #view,
 body[data-state="paused"] #view,
 body[data-state="results"] #view,
 body[data-state="mode"] #view,
+body[data-state="vehicle"] #view,
 body[data-over="game"] #view { opacity: 1; }
 /* Panels over a frozen game: a CSS filter on a canvas that is no longer drawn. */
 body[data-state="paused"] #view,
@@ -597,7 +598,7 @@ body.calm .stack .cb { animation: none !important; }
   .wordmark { left: -40%; right: -40%; }
   .stack-col { padding: 64px 0 22px; }
   .stack { gap: 14px; }
-  .stack .cb { --h: 54px; --b: 26px; font-size: 19px; width: calc(100% - 24px - (5 - var(--i, 0)) * 8px); }
+  .stack .cb { --h: 54px; --b: 26px; font-size: 19px; width: calc(100% - 24px - (6 - var(--i, 0)) * 8px); }
   .stack .quit-gap { height: 0; }
   .cb .meta:not(.sel-inline) { display: none; }
   .cb .meta { margin-right: 14%; }

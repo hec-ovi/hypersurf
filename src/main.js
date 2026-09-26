@@ -32,6 +32,9 @@ import { Toasts } from './ui/toast.js';
 import { Loading } from './ui/loading.js';
 import { SelectStage } from './ui/stage.js';
 import { modeOptions } from './ui/modes.js';
+import { vehicleOptions } from './ui/vehicles.js';
+import { createVehicle, VEHICLES, VEHICLE_ORDER, DEFAULT_VEHICLE, vehicleId } from './game/vehicles/index.js';
+import { createUniforms } from './game/materials.js';
 import { mountIcons } from './ui/icons.js';
 import { decode, decodeAll, setCalm } from './ui/text.js';
 import { BeatCheck } from './ui/beatcheck.js';
@@ -156,7 +159,7 @@ function loadSettings() {
   const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
   // capture: the tab-capture delay this browser last measured or was set to (ms).
   // video: the YouTube mini player's mode ('mini' or 'hidden') and corner.
-  const defaults = { latency: 0, calm: reduced, quality: 'high', mode: 'mono', sfx: true, capture: null, video: 'mini', corner: 'br' };
+  const defaults = { latency: 0, calm: reduced, quality: 'high', mode: 'mono', vehicle: DEFAULT_VEHICLE, sfx: true, capture: null, video: 'mini', corner: 'br' };
   try {
     const raw = storage && storage.getItem(SETTINGS_KEY);
     const v = raw ? JSON.parse(raw) : {};
@@ -165,6 +168,7 @@ function loadSettings() {
       calm: typeof v.calm === 'boolean' ? v.calm : defaults.calm,
       quality: ['high', 'medium', 'low'].includes(v.quality) ? v.quality : defaults.quality,
       mode: RULES[v.mode] ? v.mode : defaults.mode,
+      vehicle: vehicleId(v.vehicle),
       sfx: typeof v.sfx === 'boolean' ? v.sfx : defaults.sfx,
       capture: Number.isFinite(v.capture) ? Math.max(0, Math.min(800, v.capture)) : defaults.capture,
       video: v.video === 'hidden' ? 'hidden' : 'mini',
@@ -185,7 +189,7 @@ function saveSettings() {
 
 /** Screen shown in each state. Menu screens sit over the terrain sky; pause and results over the frozen game. */
 const SCREENS = {
-  menu: 'menu', file: 'file', video: 'video', mode: 'mode', settings: 'settings', howto: 'howto',
+  menu: 'menu', file: 'file', video: 'video', mode: 'mode', vehicle: 'vehicle', settings: 'settings', howto: 'howto',
   analyze: 'loading', paused: 'pause', results: 'results',
 };
 const SKY = new Set(['menu', 'file', 'video', 'howto', 'analyze']);
@@ -202,11 +206,13 @@ function setState(state, initialFocus = null) {
   // Settings opened from pause sit over the frozen game instead of the sky.
   const overGame = state === 'settings' && app.settingsFrom === 'paused';
   if (overGame) document.body.dataset.over = 'game'; else delete document.body.dataset.over;
-  const skyOn = SKY.has(state) || (state === 'settings' && !overGame) || (state === 'mode' && !(app.view && app.view.gfx.renderer));
+  const gfx = app.view && app.view.gfx.renderer ? app.view.gfx : null;
+  const skyOn = SKY.has(state) || (state === 'settings' && !overGame) || (!!STAGES[state] && !gfx);
   document.body.classList.toggle('sky', skyOn);
   if (skyOn) sky.start(app.settings.calm || reducedMotion()); else sky.stop();
-  if (state === 'mode') stage.show(app.settings.mode, app.view && app.view.gfx.renderer ? app.view.gfx : null);
-  else stage.hide();
+  for (const [s, st] of Object.entries(STAGES)) {
+    if (s === state) st.show(app.settings[s], gfx); else st.hide();
+  }
   if (state !== 'settings') beatCheck.stop();
   app.redraw = 2; // frozen screens draw the game once more, then hold the image
   const root = SCREENS[state] ? $(SCREENS[state]) : null;
@@ -979,10 +985,11 @@ function frame() {
   const dt = Math.min(0.1, Math.max(0, (t0 - app.lastFrame) / 1000));
   const frameMs = t0 - app.lastFrame;
   app.lastFrame = t0;
-  if (app.state === 'mode') {
+  if (STAGES[app.state]) {
     // The selection stage borrows the renderer while its screen is open.
-    stage.render(dt);
-    stats.stageFrames = stage.frames;
+    const st = STAGES[app.state];
+    st.render(dt);
+    stats.stageFrames = st.frames;
     if (DEBUG) debugOverlay(t0);
     return;
   }
@@ -1279,6 +1286,13 @@ const stage = new SelectStage($('mode'), modeOptions((id) => {
   const b = app.best.get('demo', id);
   return b ? `${formatScore(b.final)} (demo)` : '—';
 }), { fx, noun: 'mode' });
+let stageUniforms = null;
+const vehicleStage = new SelectStage($('vehicle'), vehicleOptions((id, parent) => {
+  if (!stageUniforms) stageUniforms = createUniforms();
+  return createVehicle(id, parent, stageUniforms);
+}), { fx, noun: 'vehicle' });
+/** The selection stages by state; each shows app.settings[state]. */
+const STAGES = { mode: stage, vehicle: vehicleStage };
 const beatCheck = new BeatCheck(document.querySelector('.beatcheck'), {
   audio: () => app.ctx,
   latencyMs: () => app.settings.latency,
@@ -1357,6 +1371,14 @@ function setMode(id) {
   app.settings.mode = id;
   $('mode-now').textContent = MODE_LABEL[id];
   updateMenuBest();
+  saveSettings();
+}
+
+function setVehicle(id) {
+  app.settings.vehicle = vehicleId(id);
+  $('vehicle-now').textContent = VEHICLES[app.settings.vehicle].name;
+  document.body.dataset.vehicle = app.settings.vehicle;
+  if (app.view) app.view.setVehicle(app.settings.vehicle);
   saveSettings();
 }
 
@@ -1474,6 +1496,19 @@ function wireUi() {
       setMode(MODE_IDS[Math.max(0, Math.min(2, i + (k ? 1 : -1)))]);
     });
   }
+  const vehicleBtn = $('vehicle-btn');
+  const stepVehicle = (dir) => {
+    const i = VEHICLE_ORDER.indexOf(app.settings.vehicle);
+    setVehicle(VEHICLE_ORDER[Math.max(0, Math.min(VEHICLE_ORDER.length - 1, i + dir))]);
+  };
+  vehicleBtn.addEventListener('click', () => setState('vehicle'));
+  vehicleBtn.addEventListener('step', (e) => {
+    if (e.detail.wrap) setState('vehicle'); // Enter opens vehicle select
+    else stepVehicle(e.detail.dir);
+  });
+  for (const [k, chev] of Array.from(vehicleBtn.querySelectorAll('.chev')).entries()) {
+    chev.addEventListener('click', (e) => { e.stopPropagation(); stepVehicle(k ? 1 : -1); });
+  }
   $('settings-btn').addEventListener('click', openSettings);
   $('howto-btn').addEventListener('click', () => { setState('howto'); showTab('howto', app.howtoTab || 0, false); });
   $('fs-btn').addEventListener('click', toggleFullscreen);
@@ -1534,6 +1569,10 @@ function wireUi() {
   // Mode select.
   $('mode').querySelector('[data-stage-confirm]').addEventListener('click', () => {
     setMode(stage.value);
+    setState('menu');
+  });
+  $('vehicle').querySelector('[data-stage-confirm]').addEventListener('click', () => {
+    setVehicle(vehicleStage.value);
     setState('menu');
   });
 
@@ -1597,6 +1636,7 @@ function wireUi() {
   focus.register('file', { back: () => back('file') });
   focus.register('video', { back: () => back('video') });
   focus.register('mode', { back: () => back('mode'), side: (dir) => { stage.step(dir); return true; } });
+  focus.register('vehicle', { back: () => back('vehicle'), side: (dir) => { vehicleStage.step(dir); return true; } });
   focus.register('settings', { back: () => back('settings'), tab: (dir) => tabStep('settings', dir) });
   focus.register('howto', { back: () => back('howto'), tab: (dir) => tabStep('howto', dir) });
   focus.register('loading', { back: cancelLoad });
@@ -1642,6 +1682,7 @@ function wireUi() {
 
   // Initial state of the toggles.
   setMode(currentMode());
+  setVehicle(app.settings.vehicle);
   setSfx(app.settings.sfx);
   setCalmVisuals(app.settings.calm);
   mini.setMode(app.settings.video);
@@ -1666,13 +1707,13 @@ async function boot() {
   wireUi();
   setState('menu');
   if (LIVE_DEMO) note('info', 'Live path test', '?live=demo: the demo plays through the live listening path, as a YouTube video would.');
-  app.view = new GameView($('view'), { forceWebGL: params.get('webgl') === '1', quality: app.settings.quality });
+  app.view = new GameView($('view'), { forceWebGL: params.get('webgl') === '1', quality: app.settings.quality, vehicle: app.settings.vehicle });
   app.viewReady = app.view.init().then(() => {
     stats.backend = app.view.backend;
     stats.quality = app.view.gfx.qualityName;
     app.view.calm = app.settings.calm;
     app.view.gfx.renderer.setAnimationLoop(frame);
-    if (app.state === 'mode') stage.show(currentMode(), app.view.gfx);
+    if (STAGES[app.state]) STAGES[app.state].show(app.settings[app.state], app.view.gfx);
     return true;
   }, (err) => {
     console.warn('renderer unavailable', err);

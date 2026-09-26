@@ -370,6 +370,7 @@ The stack, from the top, with the meta text for each button:
 | **PLAY AUDIO FILE** | `MP3 · WAV · OGG · FLAC` |
 | **PLAY A YOUTUBE VIDEO** | `YOUTUBE · LIVE LISTEN`. Research §5 says not to put "YouTube" in a mode or game name, so it appears only as the source. |
 | **MODE** | Inline `‹ MONO ›`: ←/→ cycle the mode here, and Enter or click opens Mode select. |
+| **VEHICLE** | Inline `‹ DART ›`: ←/→ cycle DART / WAVE / NYAN, and Enter or click opens Vehicle select (the §7.3 stage with the real models, `SELECT VEHICLE`, `SAME RIDE · DIFFERENT LOOK`). A vehicle is only a look: motion and collision are the same. |
 | **SETTINGS** | |
 | **HOW TO PLAY** | In the separate quit slot, after the extra gap. |
 
