@@ -101,10 +101,32 @@ export class Hud {
     if (pr !== this.progressShown) { e.progress.style.transform = `scaleX(${pr / 1000})`; this.progressShown = pr; }
   }
 
-  /** React to one rules event. */
+  /** Restart a one-shot CSS animation class on a cell, with a delay. */
+  _flash(k, cls, delayMs) {
+    const c = this.cells[k];
+    c.style.setProperty('--d', `${delayMs}ms`);
+    c.classList.remove('burst', 'crack');
+    void c.offsetWidth;
+    c.classList.add(cls);
+  }
+
+  /** React to one rules event. The grid shown is still the one before it. */
   event(ev) {
     switch (ev.type) {
+      case EVENT.GREY:
+        if (ev.value > 0) {
+          // The grey took the top block of its column: that cell cracks.
+          const col = ev.lane + 1;
+          for (let row = ROWS - 1; row >= 0; row--) {
+            if (this.shown[col * ROWS + row] >= 0) { this._flash(col * ROWS + row, 'crack', 0); break; }
+          }
+        }
+        break;
       case EVENT.COLLECT:
+        // Cash-in: every collected cell bursts, bottom row first, 20 ms apart.
+        if (ev.value > 0) {
+          for (let k = 0; k < COLUMNS * ROWS; k++) if (this.shown[k] >= 0) this._flash(k, 'burst', (k % ROWS) * 20);
+        }
         if (ev.value > 0) this.toast(`+${formatScore(ev.value)}${ev.reason === REASON.OVERFILL ? ' overfill' : ev.reason === REASON.PB_OVERFILL ? ' PB overfill' : ''}`, ev.mult > 1 ? 'big' : '');
         break;
       case EVENT.POWER:

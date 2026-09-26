@@ -263,7 +263,15 @@ body[data-state="play"] { cursor: none; }
   background: rgba(5, 6, 10, 0.55);
   border: 1px solid var(--line);
 }
-.cell { aspect-ratio: 1; border-radius: 3px; background: rgba(255, 255, 255, 0.05); }
+.cell { position: relative; aspect-ratio: 1; border-radius: 3px; background: rgba(255, 255, 255, 0.05); }
+/* Cash-in: a copy of the cell's colour bursts outward (staggered by --d). */
+.cell.burst::after, .cell.crack::after { content: ""; position: absolute; inset: 0; border-radius: 3px; pointer-events: none; }
+.cell.burst::after { background: var(--c); animation: burst 0.28s ease-out var(--d, 0ms) both; }
+@keyframes burst { from { transform: scale(1); opacity: 1; } to { transform: scale(1.9); opacity: 0; } }
+/* Grey hit: the top cell cracks and falls away in grey. */
+.cell.crack::after { background: linear-gradient(135deg, #e8ecf5 0 46%, transparent 46% 54%, #8b93ad 54%); animation: crack 0.22s ease-in both; }
+@keyframes crack { from { transform: none; opacity: 0.9; } to { transform: translateY(6px) rotate(8deg) scale(0.7); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .cell.burst::after, .cell.crack::after, .cell.pop { animation-duration: 0.01s; } }
 .cell.on { background: var(--c); box-shadow: 0 0 8px var(--c); }
 .cell.pop { animation: pop 0.12s cubic-bezier(0.34, 1.56, 0.64, 1); }
 @keyframes pop { from { transform: scale(1.25); } to { transform: scale(1); } }
