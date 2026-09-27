@@ -169,6 +169,14 @@ body[data-state="paused"] #shade, body[data-state="results"] #shade, body[data-o
 .cb:focus .lbl::before { transform: rotate(45deg) scale(1); }
 .cb:focus .meta, .cb:focus .chev { color: var(--gold-hi); }
 .cb:active { transform: translateX(-10px) scale(.99); }
+/* The featured entry (Special levels) stays gold without focus, so it is the first thing people click. */
+.cb.featured {
+  --o1: var(--gold); --o2: rgba(255, 201, 64, .25);
+  --f1: #3c3310; --f2: #252612; --f3: #10201d;
+  --tc: var(--gold-hi);
+  filter: drop-shadow(0 0 10px var(--gold-glow));
+}
+.cb.featured .meta { color: var(--gold-hi); }
 
 .stack { display: flex; flex-direction: column; align-items: flex-end; gap: 22px; }
 .stack .cb { width: calc(min(40vw, 540px) + var(--i, 0) * 22px); }

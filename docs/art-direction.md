@@ -12,7 +12,7 @@ In one line: **a calm, precise, premium in-game sci-fi interface.** It uses dark
 
 ## 1. Rules that hold everywhere
 
-1. **Gold means focus, and only focus.** Every screen has exactly one gold control, the one that has focus. Arrow keys, Tab, gamepad and mouse hover all move it (hover moves focus, as in a game menu). Nothing else is gold: not the multiplier, not "new best", not warnings, not tips.
+1. **Gold means focus, plus one featured entry.** Every screen has one gold control, the one that has focus; the main menu also keeps SPECIAL LEVELS gold (`.cb.featured`) so first-time players go there first. Arrow keys, Tab, gamepad and mouse hover all move focus (hover moves focus, as in a game menu). Nothing else is gold: not the multiplier, not "new best", not warnings, not tips.
 2. **Cyan is the interface.** Outlines, hairlines, active tabs, gauges, fills and positive values are all cyan.
 3. **Other colours are sparse and each has one meaning.**
    - Lime means positive status: power multiplier, new best, video found, listening, bonus lines.
